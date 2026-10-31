@@ -19,11 +19,36 @@ FANET-Wetter- und Namenspakete mit gesetztem Forward-Flag empfangen und weiterle
 5. Kompilieren und auf das Board hochladen.
 6. Den seriellen Monitor mit **115200 Baud** öffnen. Beim Start sollte `RX ready` erscheinen; Statuszähler werden ungefähr jede Minute ausgegeben.
 
-## Verhalten und Einstellungen
+## Arbeitsweise
 
-- Weitergeleitet werden FANET-NAME- (`0x02`) und Wetterpakete (`0x04`) nur, wenn das Forward-Flag gesetzt ist.
-- Standardmäßig sind Light-Sleep und adaptiver Empfang aktiviert (`ENABLE_LIGHT_SLEEP` und `ENABLE_ADAPTIVE_RX` stehen auf `1`). Zum dauerhaften Empfang können die Werte im Sketch auf `0` gesetzt werden.
+Die Station empfängt FANET-Pakete und leitet ausschließlich gültige **NAME-Pakete (`0x02`)** und **Wetterpakete (`0x04`)** weiter, bei denen das Forward-Flag gesetzt ist. Andere Pakettypen, ungültige Pakete und Pakete ohne dieses Flag werden verworfen. Vor dem erneuten Senden löscht die Firmware das Forward-Flag. So wird das Paket von einer weiteren Station mit derselben Weiterleitungsregel nicht erneut weitergeleitet.
+
+Vor dem Senden wartet die Firmware eine kurze zufällige Zeit und prüft, ob der Funkkanal frei ist. Bereits gesendete oder noch in der Warteschlange befindliche Duplikate werden unterdrückt. Die Warteschlange fasst acht Pakete; Pakete, die länger als 30 Sekunden warten, verfallen. Nach dem Senden hält die Firmware entsprechend der Sendedauer eine Funkpause ein, um den in der Firmware vorgesehenen Anteil von höchstens 1 % Sendezeit einzuhalten.
+
+## Empfang und Lernen der Sendeintervalle
+
+Im adaptiven Empfang (`ENABLE_ADAPTIVE_RX = 1`, Standard) bleibt das Funkmodul beim Start zunächst dauerhaft im Empfang. Für jede Kombination aus Absender und Pakettyp lernt die Firmware separat, in welchem Abstand gültige Pakete mit Forward-Flag eintreffen:
+
+- Für ein NAME-Protokoll braucht sie drei empfangene Pakete mit zwei aufeinanderfolgenden, höchstens 20 % voneinander abweichenden Intervallen.
+- Für ein Wetterprotokoll braucht sie vier Pakete mit drei Intervallen, deren größte und kleinste Messung höchstens 25 % des mittleren Intervalls auseinanderliegen.
+- Empfangsabstände unter zwei Sekunden zählen nicht als neue Messung. So verschieben sehr schnelle Wiederholungen den gelernten Rhythmus nicht.
+
+Sobald ein Intervall stabil gelernt ist, berechnet die Station den nächsten erwarteten Empfang. Sie schaltet den Funkempfang erst kurz vor diesem Zeitpunkt ein und kann dazwischen das Funkmodul und – sofern aktiviert – den ESP32 in Light-Sleep versetzen. Verpasste Pakete verbreitern das Empfangsfenster; kleine Abweichungen korrigieren den gespeicherten Rhythmus schrittweise.
+
+Während der ersten Erkennung sowie nach dem Auftauchen eines neuen oder geänderten Protokolls bleibt der Empfänger dauerhaft aktiv. Sind alle erkannten Protokolle gelernt, endet diese Erkennung nach drei Minuten ohne ein weiteres passendes Paket; spätestens nach 20 Minuten endet sie auch bei unvollständigem Lernen. Alle zwölf Stunden startet eine erneute Erkennung. Dabei bleiben zuvor gelernte Intervalle erhalten. Die Lernwerte liegen nur im Arbeitsspeicher und gehen beim Neustart oder Stromausfall verloren.
+
+Es können bis zu 32 Absender-/Pakettyp-Kombinationen erfasst werden. NAME und Wetter derselben Station zählen dabei getrennt. Bei überschrittener Kapazität meldet der serielle Monitor eine Warnung; weitere Kombinationen können dann nicht eingeplant werden.
+
+## LEDs und Kontrolle
+
+- **GPIO 35 (`PIN_LED`):** leuchtet während des Sendens eines weitergeleiteten Pakets und ist im normalen Empfangs- und Wartezustand aus. Bei einem fatalen Fehler blinkt sie dauerhaft: 200 ms an, 800 ms aus. In diesem Fall zeigt der serielle Monitor zusätzlich `FATAL` mit dem fehlgeschlagenen Vorgang und Fehlercode; die Station muss zurückgesetzt und der Fehler untersucht werden.
+- **GPIO 4 (`PIN_AWAKE_LED`, externe LED):** leuchtet, solange der ESP32 wach ist, und ist während Light-Sleep aus. Sie zeigt also den Schlafzustand an, nicht den Paketempfang.
+
+Den seriellen Monitor auf **115200 Baud** stellen. Beim Start sind `RX ready` und Meldungen zu Empfangs- und Schlafmodus zu erwarten. Etwa jede Minute gibt `Status` die Zähler `RX` (empfangene Funkpakete), `TX` (erfolgreich weitergeleitete Pakete), `filtered` (nicht weitergeleitete Pakete), `duplicates` (erkannte Duplikate), `dropped` (verlorene oder abgelaufene Pakete) und `cadence=gelernte/erfasste Protokolle` aus. Eine Batteriewarnung erscheint unter 3,30 V; sie deaktiviert den Empfang nicht.
+
+## Einstellungen und Funkprofil
+
+- Light-Sleep und adaptiver Empfang sind standardmäßig aktiviert (`ENABLE_LIGHT_SLEEP` und `ENABLE_ADAPTIVE_RX` stehen auf `1`). Zum dauerhaften Empfang können die Werte im Sketch auf `0` gesetzt werden. Bei deaktiviertem adaptivem Empfang bleibt das Funkmodul dauerhaft im Empfang; bei deaktiviertem Light-Sleep bleibt zusätzlich der ESP32 wach.
 - Das Funkprofil ist im Sketch auf **868,2 MHz** mit den dort angegebenen FANET-Parametern eingestellt. Frequenz und Sendeleistung müssen zur Region und zum verwendeten Netz passen.
-- Adaptiver Empfang lernt die Sendeintervalle der Stationen; eine erneute Erkennung startet alle 12 Stunden. Während der Erkennung bleibt der Empfänger durchgehend aktiv.
 
 **Hinweis:** Funkbetrieb und Sendeleistung müssen den örtlichen Vorschriften entsprechen. Vor dem Einsatz Antenne, Frequenz und Hardwarekompatibilität prüfen.
