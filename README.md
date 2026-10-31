@@ -44,11 +44,30 @@ Die Firmware verwaltet 32 Zeitplanplätze. Beim ersten passenden Paket einer Abs
 - **GPIO 35 (`PIN_LED`):** leuchtet während des Sendens eines weitergeleiteten Pakets und ist im normalen Empfangs- und Wartezustand aus. Bei einem fatalen Fehler blinkt sie dauerhaft: 200 ms an, 800 ms aus. In diesem Fall zeigt der serielle Monitor zusätzlich `FATAL` mit dem fehlgeschlagenen Vorgang und Fehlercode; die Station muss zurückgesetzt und der Fehler untersucht werden.
 - **GPIO 4 (`PIN_AWAKE_LED`, externe LED):** leuchtet, solange der ESP32 wach ist, und ist während Light-Sleep aus. Sie zeigt also den Schlafzustand an, nicht den Paketempfang.
 
-Den seriellen Monitor auf **115200 Baud** stellen. Beim Start sind `RX ready` und Meldungen zu Empfangs- und Schlafmodus zu erwarten. Etwa jede Minute gibt `Status` die Zähler `RX` (empfangene Funkpakete), `TX` (erfolgreich weitergeleitete Pakete), `filtered` (nicht weitergeleitete Pakete), `duplicates` (erkannte Duplikate), `dropped` (verlorene oder abgelaufene Pakete) und `cadence=gelernte/erfasste Protokolle` aus. Eine Batteriewarnung erscheint unter 3,30 V; sie deaktiviert den Empfang nicht.
+Den seriellen Monitor auf **115200 Baud** stellen. Beim Start sind `RX ready` und Meldungen zu Empfangs- und Schlafmodus zu erwarten, sofern die Batterie den Funkbetrieb erlaubt. Im normalen Betrieb gibt `Status` etwa jede Minute die Zähler `RX` (empfangene Funkpakete), `TX` (erfolgreich weitergeleitete Pakete), `filtered` (nicht weitergeleitete Pakete), `duplicates` (erkannte Duplikate), `dropped` (verlorene oder abgelaufene Pakete) und `cadence=gelernte/erfasste Protokolle` aus.
+
+## Batterieschutz
+
+Die Firmware misst die Batteriespannung beim Start und danach etwa alle 60 Sekunden. Sobald eine gültige Messung **unter 3,30 V** liegt, stoppt sie Empfang und Senden, leert die Sendewarteschlange und versetzt das Funkmodul in Schlaf. Der ESP32 geht in **Light-Sleep** und wacht nur für die nächste Batterieprüfung auf; Funkpakete wecken ihn in diesem Zustand nicht auf. Die externe LED an GPIO 4 ist beim Schlafen aus und leuchtet während der kurzen Prüfungen.
+
+Der Funkbetrieb bleibt gesperrt, bis eine gültige Messung **über 3,60 V** liegt. Genau 3,30 V oder 3,60 V ändern den aktuellen Zustand nicht. Nach der Erholung werden die alten Empfangszeitpläne und gespeicherten Duplikate gelöscht. Die Station beginnt erneut mit kontinuierlichem Empfang und lernt die Sendeintervalle von Grund auf. Während der Unterspannungsphase werden keine Pakete gespeichert oder später nachgesendet.
+
+Im seriellen Monitor erscheinen `BATTERY LOW` beim Abschalten, die regelmäßigen Spannungsmessungen und `BATTERY RECOVERED` beim Wiederanlauf. Eine ungültige ADC-Messung wird ausdrücklich als Warnung gemeldet und verändert den aktuellen Schutzstatus nicht; sie kann die Station insbesondere nicht aus dem Batterieschlaf freigeben. Schlägt Light-Sleep fehl, bleibt der Funk bei Unterspannung trotzdem gesperrt und der Fehler wird ausgegeben. Batterieanschluss, Spannungsteiler und `BATTERY_CALIBRATION` müssen zur Hardware passen. Die Software ersetzt keinen hardwareseitigen Tiefentladeschutz.
 
 ## Einstellungen und Funkprofil
 
-- Light-Sleep und adaptiver Empfang sind standardmäßig aktiviert (`ENABLE_LIGHT_SLEEP` und `ENABLE_ADAPTIVE_RX` stehen auf `1`). Zum dauerhaften Empfang können die Werte im Sketch auf `0` gesetzt werden. Bei deaktiviertem adaptivem Empfang bleibt das Funkmodul dauerhaft im Empfang; bei deaktiviertem Light-Sleep bleibt zusätzlich der ESP32 wach.
+- Light-Sleep und adaptiver Empfang sind standardmäßig aktiviert (`ENABLE_LIGHT_SLEEP` und `ENABLE_ADAPTIVE_RX` stehen auf `1`). Zum dauerhaften Empfang können die Werte im Sketch auf `0` gesetzt werden. Bei deaktiviertem adaptivem Empfang bleibt das Funkmodul im normalen Betrieb dauerhaft im Empfang; bei deaktiviertem Light-Sleep bleibt zusätzlich der ESP32 wach. Der Batterieschutz und dessen Light-Sleep bleiben unabhängig von diesen Einstellungen aktiv.
 - Das Funkprofil ist im Sketch auf **868,2 MHz** mit den dort angegebenen FANET-Parametern eingestellt. Frequenz und Sendeleistung müssen zur Region und zum verwendeten Netz passen.
 
 **Hinweis:** Funkbetrieb und Sendeleistung müssen den örtlichen Vorschriften entsprechen. Vor dem Einsatz Antenne, Frequenz und Hardwarekompatibilität prüfen.
+
+## Tests für den Batterieschutz
+
+Die Host-Tests benötigen `g++` und prüfen Schaltschwellen, Funkabschaltung, wiederholten Schlaf, Wiederanlauf und Fehlerverhalten anhand simulierter Hardware. Sie ersetzen nicht das Kompilieren und Prüfen auf dem Heltec-Board:
+
+```sh
+g++ -std=c++17 -Wall -Wextra -Werror -DARDUINO_ARCH_ESP32 \
+  -DCONFIG_IDF_TARGET_ESP32S3 -Itests/stubs tests/battery_test.cpp \
+  -o /tmp/fanet-battery-test
+/tmp/fanet-battery-test
+```
