@@ -15,6 +15,7 @@ void resetFirmware() {
   radio.rxCalls = radio.txCalls = radio.readCalls = 0;
   radio.asleep = radio.listening = false;
   radio.callback = nullptr;
+  MockPreferences::bytes.clear();
   receiveSchedule.reset();
   recentPackets = Fanet::RecentPackets{};
   stationDiscovery = Fanet::StationDiscovery{};
@@ -24,6 +25,65 @@ void resetFirmware() {
   receivedCount = forwardedCount = filteredCount = duplicateCount = droppedCount = 0;
   lastTxFinished = txOffTimeMs = lastStatus = 0;
   lastRadioActivity = lastLearningStart = 0;
+}
+
+void testStoredScheduleVerification() {
+  Fanet::PersistedSchedule saved;
+  saved.address[0] = 0x11;
+  saved.address[1] = 0x22;
+  saved.address[2] = 0x33;
+  saved.type = Fanet::NAME;
+  saved.period = 10000;
+
+  Fanet::ReceiveSchedule schedule;
+  assert(schedule.restore(&saved, 1));
+  assert(!schedule.complete());
+  uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                    0x11, 0x22, 0x33, 0x01};
+  assert(!schedule.observe(name, sizeof(name), 1000));
+  assert(!schedule.complete());
+  assert(!schedule.observe(name, sizeof(name), 11000));
+  assert(schedule.complete());
+  Fanet::PersistedSchedule exported[Fanet::MAX_SCHEDULES];
+  assert(schedule.exportSchedules(exported, Fanet::MAX_SCHEDULES) == 1);
+  assert(exported[0].period == 10000);
+
+  Fanet::ReceiveSchedule changed;
+  assert(changed.restore(&saved, 1));
+  assert(!changed.observe(name, sizeof(name), 1000));
+  assert(!changed.observe(name, sizeof(name), 16000));
+  assert(changed.takeRelearningDetected());
+  assert(!changed.complete());
+  assert(changed.exportSchedules(exported, Fanet::MAX_SCHEDULES) == 0);
+
+  uint8_t weather[] = {static_cast<uint8_t>(Fanet::WEATHER | Fanet::FORWARD_FLAG),
+                       0x11, 0x22, 0x33, 0, 0, 0, 0, 0, 0, 0};
+  assert(changed.observe(weather, sizeof(weather), 20000));
+  assert(!changed.observe(name, sizeof(name), 31000));
+  assert(changed.trackedCount() == 2);
+  assert(changed.exportSchedules(exported, Fanet::MAX_SCHEDULES) == 1);
+  assert(exported[0].period == 15000);
+}
+
+void testPersistentScheduleRoundTrip() {
+  resetFirmware();
+  assert(!loadPersistentSchedule());
+  uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                    0x44, 0x55, 0x66, 0x01};
+  receiveSchedule.observe(name, sizeof(name), 1000);
+  receiveSchedule.observe(name, sizeof(name), 11000);
+  receiveSchedule.observe(name, sizeof(name), 21000);
+  assert(receiveSchedule.persistenceDirty());
+  persistScheduleIfNeeded();
+  assert(!receiveSchedule.persistenceDirty());
+
+  receiveSchedule.reset();
+  assert(loadPersistentSchedule());
+  assert(receiveSchedule.trackedCount() == 1);
+  assert(!receiveSchedule.complete());
+  receiveSchedule.observe(name, sizeof(name), 30000);
+  receiveSchedule.observe(name, sizeof(name), 40000);
+  assert(receiveSchedule.complete());
 }
 
 void testStartupAndRelay() {
@@ -62,6 +122,8 @@ void testSleepFailureDisablesSleep() {
 }
 
 int main() {
+  testStoredScheduleVerification();
+  testPersistentScheduleRoundTrip();
   testStartupAndRelay();
   testSleepFailureDisablesSleep();
   std::cout << "Firmware startup, relay and sleep tests passed\n";
