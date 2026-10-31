@@ -9,7 +9,6 @@
 constexpr int HIGH = 1;
 constexpr int LOW = 0;
 constexpr int OUTPUT = 1;
-constexpr int ADC_11db = 3;
 constexpr unsigned portNUM_PROCESSORS = 2;
 using esp_err_t = int;
 using gpio_num_t = int;
@@ -19,11 +18,9 @@ constexpr esp_err_t ESP_ERR_NOT_FOUND = 2;
 constexpr esp_err_t ESP_ERR_SLEEP_REJECT = 3;
 constexpr esp_err_t ESP_ERR_SLEEP_TOO_SHORT_SLEEP_DURATION = 4;
 constexpr int ESP_EXT1_WAKEUP_ANY_HIGH = 1;
-constexpr int ESP_SLEEP_WAKEUP_EXT1 = 1;
 
 namespace Mock {
 inline uint32_t now = 0;
-inline uint32_t adcMillivolts = 800;
 inline int pins[40] = {};
 inline bool radioWakeup = false;
 inline uint64_t sleepDurationUs = 0;
@@ -39,9 +36,6 @@ inline void delay(uint32_t duration) { Mock::now += duration; }
 inline void pinMode(int, int) {}
 inline void digitalWrite(int pin, int value) { Mock::pins[pin] = value; }
 inline int digitalRead(int pin) { return Mock::pins[pin]; }
-inline void analogReadResolution(int) {}
-inline void analogSetPinAttenuation(int, int) {}
-inline uint32_t analogReadMilliVolts(int) { return Mock::adcMillivolts; }
 
 struct SerialMock {
   void begin(int) {}
@@ -83,11 +77,6 @@ inline esp_err_t esp_task_wdt_reset() {
 }
 inline esp_err_t esp_sleep_enable_ext1_wakeup_io(uint64_t, int) {
   Mock::radioWakeup = true;
-  return ESP_OK;
-}
-inline esp_err_t esp_sleep_disable_wakeup_source(int) {
-  if (!Mock::radioWakeup) return ESP_ERR_INVALID_STATE;
-  Mock::radioWakeup = false;
   return ESP_OK;
 }
 inline esp_err_t esp_sleep_enable_timer_wakeup(uint64_t duration) {
