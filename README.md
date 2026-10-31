@@ -46,7 +46,13 @@ Die Firmware verwaltet 32 Zeitplanplätze. Beim ersten passenden Paket einer Abs
 
 Den seriellen Monitor auf **115200 Baud** stellen. Beim Start sind `RX ready` und Meldungen zu Empfangs- und Schlafmodus zu erwarten. Im normalen Betrieb gibt `Status` etwa jede Minute die Zähler `RX` (empfangene Funkpakete), `TX` (erfolgreich weitergeleitete Pakete), `filtered` (nicht weitergeleitete Pakete), `duplicates` (erkannte Duplikate), `dropped` (verlorene oder abgelaufene Pakete) und `cadence=gelernte/erfasste Protokolle` aus.
 
+## Akku und Solarversorgung
+
 Die Firmware misst die Akkuspannung nicht und schaltet Senden oder Empfangen nicht anhand einer Spannungsschwelle ab. Der Akku beziehungsweise dessen eigene Schutzschaltung übernimmt den Unterspannungsschutz.
+
+Eine geeignete 5-V-Versorgung über USB-C kann das Heltec WiFi LoRa 32 V3 versorgen und den angeschlossenen, kompatiblen 1S-Li-Ion-/LiPo-Akku über die Ladeelektronik des Boards laden. Ein Solarpanel kann dafür mit einem passenden Solarregler beziehungsweise DC/DC-Wandler verwendet werden, der eine stabile, geregelte 5-V-Ausgabe für USB-C liefert. Ein Panel liefert je nach Licht und Last keine konstante Spannung: nicht direkt an den Akku anschließen und nicht ungeregelt mit USB-C verbinden. Boardrevision, zulässigen Akkutyp und Ladehinweise des Herstellers vor dem Aufbau prüfen; die Solarversorgung muss auch den Verbrauch der Station decken.
+
+Beim Heltec WiFi LoRa 32 V3 kann eine geeignete 5-V-Versorgung über USB-C das Board versorgen und den angeschlossenen, kompatiblen 1S-Li-Ion-/LiPo-Akku über die Ladeelektronik des Boards laden. Ein Solarpanel kann dafür mit einem passenden Solarregler beziehungsweise DC/DC-Wandler verwendet werden, der eine stabile, geregelte 5-V-Ausgabe für USB-C liefert. Ein Panel liefert je nach Licht und Last keine konstante Spannung: nicht direkt an den Akku anschließen und nicht ungeregelt mit USB-C verbinden. Boardrevision, zulässigen Akkutyp und Ladehinweise des Herstellers vor dem Aufbau prüfen; die Solarversorgung muss auch den Verbrauch der Station decken.
 
 ## Einstellungen und Funkprofil
 
