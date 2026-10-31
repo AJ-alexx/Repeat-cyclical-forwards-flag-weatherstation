@@ -29,32 +29,24 @@ constexpr size_t MAX_SCHEDULES = 32;
 constexpr uint32_t RELEARN_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL;
 constexpr uint32_t DISCOVERY_QUIET_MS = 3UL * 60UL * 1000UL;
 constexpr uint32_t DISCOVERY_MAX_MS = 20UL * 60UL * 1000UL;
+constexpr uint32_t CONTROL_MIN_MS = 6UL * 60UL * 1000UL;
 
 class StationDiscovery {
  public:
-  void begin(uint32_t now, uint32_t timeoutMs = DISCOVERY_MAX_MS) {
+  void begin(uint32_t now) {
     active_ = true;
     startedAt_ = now;
     lastProtocolReceived_ = now;
-    timeoutMs_ = timeoutMs;
-    timedOut_ = false;
   }
 
   bool active(uint32_t now, bool allLearned = true) {
-    if (active_ && uint32_t(now - startedAt_) >= timeoutMs_) {
-      active_ = false;
-      timedOut_ = !allLearned;
-    } else if (active_ && allLearned &&
-               uint32_t(now - lastProtocolReceived_) >= DISCOVERY_QUIET_MS) {
+    if (active_ &&
+        (uint32_t(now - startedAt_) >= DISCOVERY_MAX_MS ||
+         (allLearned &&
+          uint32_t(now - lastProtocolReceived_) >= DISCOVERY_QUIET_MS))) {
       active_ = false;
     }
     return active_;
-  }
-
-  bool takeTimedOut() {
-    const bool result = timedOut_;
-    timedOut_ = false;
-    return result;
   }
 
   void protocolReceived(uint32_t now) {
@@ -63,10 +55,8 @@ class StationDiscovery {
 
  private:
   bool active_ = false;
-  bool timedOut_ = false;
   uint32_t startedAt_ = 0;
   uint32_t lastProtocolReceived_ = 0;
-  uint32_t timeoutMs_ = DISCOVERY_MAX_MS;
 };
 
 inline bool relearningDue(uint32_t now, uint32_t lastLearningStart) {
@@ -192,6 +182,7 @@ class ReceiveSchedule {
       entry = find(packet);
     }
 
+    entry->confirmed = true;
     const bool newProtocol = !entry->hasLastSeen && !entry->restored;
     if (entry->hasLastSeen) {
       const uint32_t interval = now - entry->lastSeen;
@@ -245,7 +236,7 @@ class ReceiveSchedule {
     bool listening = false;
     uint32_t shortestWait = UINT32_MAX;
     for (Entry& entry : entries_) {
-      if (!entry.used || !entry.stable) continue;
+      if (!entry.used || !entry.stable || !entry.verified) continue;
       uint32_t opensAt =
           entry.nextAt - entry.windowMarginMs - RX_STARTUP_GUARD_MS;
       uint32_t closesAt = entry.nextAt + entry.windowMarginMs;
@@ -316,19 +307,50 @@ class ReceiveSchedule {
     return !overflow_ && ready();
   }
 
-  uint32_t verificationTimeoutMs() const {
-    uint32_t timeout = DISCOVERY_MAX_MS;
+  // Starts a control phase; only stations heard during it are kept.
+  void beginControl(uint32_t now) {
+    controlStart_ = now;
+    for (Entry& entry : entries_) entry.confirmed = false;
+  }
+
+  // Continuous RX for at least CONTROL_MIN_MS. Unheard stations are awaited
+  // for one full interval of each learned protocol; heard stored protocols
+  // (including NAME) for two packets so their interval can be checked.
+  bool controlPending(uint32_t now) const {
+    const uint64_t elapsed = uint32_t(now - controlStart_);
+    if (elapsed < CONTROL_MIN_MS) return true;
     for (const Entry& entry : entries_) {
-      if (!entry.used || !entry.restored) continue;
-      const uint64_t required =
-          static_cast<uint64_t>(entry.period) * 2 +
-          static_cast<uint64_t>(entry.period) * intervalTolerance(entry) / 100;
-      if (required > timeout) {
-        timeout = required > UINT32_MAX ? UINT32_MAX
-                                        : static_cast<uint32_t>(required);
-      }
+      if (!entry.used || !entry.stable) continue;
+      const bool heard = stationHeard(entry.address);
+      const bool unverified = entry.restored && !entry.verified;
+      if (heard && !unverified) continue;
+      const uint64_t tolerance =
+          static_cast<uint64_t>(entry.period) * intervalTolerance(entry) / 100 +
+          entry.windowMarginMs;
+      const uint64_t needed = heard ? 2ULL * entry.period + tolerance
+                                    : static_cast<uint64_t>(entry.period) + tolerance;
+      if (elapsed < needed) return true;
     }
-    return timeout;
+    return false;
+  }
+
+  // Removes every station from which not a single packet arrived.
+  size_t pruneUnheardStations() {
+    size_t removed = 0;
+    for (Entry& entry : entries_) {
+      if (!entry.used || stationHeard(entry.address)) continue;
+      const uint8_t address[3] = {entry.address[0], entry.address[1],
+                                  entry.address[2]};
+      for (Entry& other : entries_) {
+        if (other.used &&
+            memcmp(other.address, address, sizeof(address)) == 0) {
+          other = Entry{};
+        }
+      }
+      persistenceDirty_ = true;
+      ++removed;
+    }
+    return removed;
   }
 
   bool takeRelearningDetected() {
@@ -385,6 +407,7 @@ class ReceiveSchedule {
     overflow_ = false;
     persistenceDirty_ = false;
     relearningDetected_ = false;
+    controlStart_ = 0;
   }
 
  private:
@@ -405,7 +428,18 @@ class ReceiveSchedule {
     bool stable = false;
     bool restored = false;
     bool verified = true;
+    bool confirmed = false;
   };
+
+  bool stationHeard(const uint8_t* address) const {
+    for (const Entry& entry : entries_) {
+      if (entry.used && entry.confirmed &&
+          memcmp(entry.address, address, sizeof(entry.address)) == 0) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   Entry* find(const uint8_t* packet) {
     const uint8_t type = packet[0] & TYPE_MASK;
@@ -566,6 +600,7 @@ class ReceiveSchedule {
   bool overflow_ = false;
   bool persistenceDirty_ = false;
   bool relearningDetected_ = false;
+  uint32_t controlStart_ = 0;
 };
 
 inline bool prepareForRelay(uint8_t* packet, size_t length) {
@@ -675,7 +710,19 @@ Fanet::RecentPackets recentPackets;
 Fanet::ReceiveSchedule receiveSchedule;
 Fanet::StationDiscovery stationDiscovery;
 bool radioSleeping = false;
+bool controlActive = false;
 uint32_t lastLearningStart = 0;
+
+// Every learning phase is also a control phase: continuous RX for at least
+// six minutes; stations not heard during it are deleted at its end.
+void beginLearning(uint32_t now) {
+  lastLearningStart = now;
+  stationDiscovery.begin(now);
+  if (!controlActive) {
+    controlActive = true;
+    receiveSchedule.beginControl(now);
+  }
+}
 
 struct PendingPacket {
   uint8_t data[Fanet::MAX_PACKET_SIZE] = {};
@@ -899,8 +946,7 @@ void receivePacket() {
         const bool changedProtocol = receiveSchedule.takeRelearningDetected();
         if (newProtocol || changedProtocol ||
             receiveSchedule.learnedCount() < previouslyLearned) {
-          lastLearningStart = receivedAt;
-          stationDiscovery.begin(receivedAt);
+          beginLearning(receivedAt);
           Serial.println("Cadence learning: continuous RX for new/changed protocol.");
         }
         stationDiscovery.protocolReceived(receivedAt);
@@ -1069,16 +1115,23 @@ void idleLightSleep() {
 #if ENABLE_ADAPTIVE_RX
   uint32_t waitMs = 0;
   const uint32_t now = millis();
-  const bool discovering = stationDiscovery.active(now, receiveSchedule.complete());
-  if (!discovering && stationDiscovery.takeTimedOut() &&
-      receiveSchedule.hasUnverifiedRestored()) {
+  if (controlActive && !receiveSchedule.controlPending(now)) {
+    controlActive = false;
+    const size_t removedStations = receiveSchedule.pruneUnheardStations();
+    const bool relearn = receiveSchedule.hasUnverifiedRestored();
     receiveSchedule.discardUnverifiedRestored();
     persistScheduleIfNeeded();
-    lastLearningStart = now;
-    stationDiscovery.begin(now);
-    Serial.println("Cadence verification timed out; starting normal learning.");
-    return;
+    Serial.printf("Control finished: %u unheard station(s) deleted.\n",
+                  static_cast<unsigned>(removedStations));
+    if (relearn) {
+      beginLearning(now);
+      Serial.println("Stored cadence not confirmed; starting normal learning.");
+      return;
+    }
   }
+  const bool discovering =
+      controlActive ||
+      stationDiscovery.active(now, receiveSchedule.complete());
   const Fanet::ReceiveMode mode = receiveSchedule.mode(now, waitMs, !discovering);
   if (!queueOccupied && !discovering &&
       mode == Fanet::ReceiveMode::Waiting) {
@@ -1167,23 +1220,25 @@ void setup() {
 #endif
   lastRadioActivity = millis();
   lastLearningStart = millis();
-  stationDiscovery.begin(
-      lastLearningStart,
-      restoredSchedule ? receiveSchedule.verificationTimeoutMs()
-                       : Fanet::DISCOVERY_MAX_MS);
+  if (restoredSchedule) {
+    // Known stations: control only, no full discovery unless needed.
+    controlActive = true;
+    receiveSchedule.beginControl(lastLearningStart);
+    Serial.println("Restart control: continuous RX for at least 6 minutes; "
+                   "unheard stored stations will be deleted.");
+  } else {
+    beginLearning(lastLearningStart);
+  }
 }
 
 void loop() {
 #if ENABLE_LIGHT_SLEEP && ENABLE_ADAPTIVE_RX
   const uint32_t now = millis();
   if (Fanet::relearningDue(now, lastLearningStart)) {
-    lastLearningStart = now;
-    stationDiscovery.begin(now);
+    beginLearning(now);
     if (radioSleeping) startReceiving();
-    Serial.println("12-hour station discovery: keeping learned schedules; "
-                   "continuous RX until three minutes without a forwarded protocol, "
-                   "until forwarded weather/name intervals are learned; "
-                   "20 minutes maximum.");
+    Serial.println("12-hour station discovery: continuous RX for at least "
+                   "6 minutes; stations not heard are deleted.");
   }
 #endif
   receivePacket();

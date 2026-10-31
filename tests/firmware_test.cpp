@@ -20,6 +20,7 @@ void resetFirmware() {
   recentPackets = Fanet::RecentPackets{};
   stationDiscovery = Fanet::StationDiscovery{};
   radioSleeping = receivedFlag = false;
+  controlActive = false;
   lightSleepReady = false;
   for (PendingPacket& packet : pending) packet = PendingPacket{};
   receivedCount = forwardedCount = filteredCount = duplicateCount = droppedCount = 0;
@@ -86,6 +87,126 @@ void testPersistentScheduleRoundTrip() {
   assert(receiveSchedule.complete());
 }
 
+Fanet::PersistedSchedule storedSchedule(uint8_t id, uint8_t type,
+                                        uint32_t period) {
+  Fanet::PersistedSchedule schedule;
+  schedule.address[0] = id;
+  schedule.address[1] = id;
+  schedule.address[2] = id;
+  schedule.type = type;
+  schedule.period = period;
+  return schedule;
+}
+
+void testRestartControlDeletesUnheardStation() {
+  const Fanet::PersistedSchedule saved[] = {
+      storedSchedule(1, Fanet::WEATHER, 60000),
+      storedSchedule(1, Fanet::NAME, 120000),
+      storedSchedule(2, Fanet::WEATHER, 60000)};
+  Fanet::ReceiveSchedule schedule;
+  assert(schedule.restore(saved, 3));
+  schedule.beginControl(0);
+
+  uint8_t weather[] = {static_cast<uint8_t>(Fanet::WEATHER | Fanet::FORWARD_FLAG),
+                       1, 1, 1, 0, 0, 0, 0, 0, 0, 0};
+  uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                    1, 1, 1, 0x01};
+  for (uint32_t t = 10000; t < 360000; t += 60000) {
+    schedule.observe(weather, sizeof(weather), t);
+  }
+  schedule.observe(name, sizeof(name), 30000);
+  schedule.observe(name, sizeof(name), 150000);
+
+  assert(schedule.controlPending(300000));
+  assert(schedule.controlPending(359999));
+  assert(!schedule.controlPending(360000));
+  assert(schedule.pruneUnheardStations() == 1);
+  assert(schedule.trackedCount() == 2);
+  assert(!schedule.hasUnverifiedRestored());
+  assert(schedule.complete());
+}
+
+void testRestartControlWaitsForSlowName() {
+  const Fanet::PersistedSchedule saved[] = {
+      storedSchedule(1, Fanet::WEATHER, 60000),
+      storedSchedule(1, Fanet::NAME, 300000)};
+  Fanet::ReceiveSchedule schedule;
+  assert(schedule.restore(saved, 2));
+  schedule.beginControl(0);
+  uint8_t weather[] = {static_cast<uint8_t>(Fanet::WEATHER | Fanet::FORWARD_FLAG),
+                       1, 1, 1, 0, 0, 0, 0, 0, 0, 0};
+  schedule.observe(weather, sizeof(weather), 10000);
+  schedule.observe(weather, sizeof(weather), 70000);
+  // The station is present, so its NAME needs time for two packets.
+  assert(schedule.controlPending(400000));
+  assert(!schedule.controlPending(700000));
+  assert(schedule.hasUnverifiedRestored());
+}
+
+void testNoDeletionDuringNormalOperation() {
+  Fanet::ReceiveSchedule schedule;
+  uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                    7, 7, 7, 0x01};
+  schedule.observe(name, sizeof(name), 0);
+  schedule.observe(name, sizeof(name), 10000);
+  schedule.observe(name, sizeof(name), 20000);
+  assert(schedule.learnedCount() == 1);
+  uint32_t waitMs = 0;
+  for (uint32_t t = 20000; t < 20000 + 3600000; t += 1000) {
+    schedule.mode(t, waitMs, true);
+  }
+  assert(schedule.learnedCount() == 1);
+  assert(schedule.trackedCount() == 2);
+}
+
+void testLearningPhaseDeletesUnheardStation() {
+  Fanet::ReceiveSchedule schedule;
+  uint8_t a[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                 1, 1, 1, 0x01};
+  uint8_t b[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                 2, 2, 2, 0x01};
+  for (uint32_t t = 0; t <= 20000; t += 10000) {
+    schedule.observe(a, sizeof(a), t);
+    schedule.observe(b, sizeof(b), t + 1);
+  }
+  assert(schedule.learnedCount() == 2);
+  schedule.beginControl(100000);
+  for (uint32_t t = 100000; t < 100000 + Fanet::CONTROL_MIN_MS; t += 10000) {
+    schedule.observe(a, sizeof(a), t);
+  }
+  assert(schedule.controlPending(100000 + Fanet::CONTROL_MIN_MS - 1));
+  assert(!schedule.controlPending(100000 + Fanet::CONTROL_MIN_MS));
+  assert(schedule.pruneUnheardStations() == 1);
+  assert(schedule.learnedCount() == 1);
+  assert(schedule.trackedCount() == 2);
+}
+
+void testFirmwareRestartPrunesStorage() {
+  resetFirmware();
+  ScheduleStorageImage image;
+  image.count = 1;
+  image.schedules[0] = storedSchedule(3, Fanet::WEATHER, 60000);
+  const uint8_t* raw = reinterpret_cast<const uint8_t*>(&image);
+  MockPreferences::bytes.assign(raw, raw + sizeof(image));
+  setup();
+  assert(controlActive);
+  while (Mock::now < 5UL * 60UL * 1000UL) {
+    Mock::now += 100;
+    idleLightSleep();
+  }
+  assert(controlActive);
+  assert(MockPreferences::bytes.size() == sizeof(image));
+  while (Mock::now < 8UL * 60UL * 1000UL && controlActive) {
+    Mock::now += 100;
+    idleLightSleep();
+  }
+  assert(!controlActive);
+  ScheduleStorageImage stored;
+  memcpy(&stored, MockPreferences::bytes.data(), sizeof(stored));
+  assert(stored.count == 0);
+  assert(Mock::log.find("1 unheard station(s) deleted") != std::string::npos);
+}
+
 void testStartupAndRelay() {
   resetFirmware();
   setup();
@@ -124,6 +245,11 @@ void testSleepFailureDisablesSleep() {
 int main() {
   testStoredScheduleVerification();
   testPersistentScheduleRoundTrip();
+  testRestartControlDeletesUnheardStation();
+  testRestartControlWaitsForSlowName();
+  testNoDeletionDuringNormalOperation();
+  testLearningPhaseDeletesUnheardStation();
+  testFirmwareRestartPrunesStorage();
   testStartupAndRelay();
   testSleepFailureDisablesSleep();
   std::cout << "Firmware startup, relay and sleep tests passed\n";
