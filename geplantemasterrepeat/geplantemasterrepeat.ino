@@ -31,24 +31,6 @@ constexpr uint32_t RELEARN_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL;
 constexpr uint32_t DISCOVERY_QUIET_MS = 3UL * 60UL * 1000UL;
 constexpr uint32_t DISCOVERY_MAX_MS = 20UL * 60UL * 1000UL;
 
-class BatteryProtection {
- public:
-  bool update(float voltage) {
-    const bool previous = suspended_;
-    if (voltage < 3.30f) {
-      suspended_ = true;
-    } else if (voltage > 3.60f) {
-      suspended_ = false;
-    }
-    return previous != suspended_;
-  }
-
-  bool suspended() const { return suspended_; }
-
- private:
-  bool suspended_ = false;
-};
-
 class StationDiscovery {
  public:
   void begin(uint32_t now) {
@@ -477,7 +459,6 @@ class RecentPackets {
 #include <RadioLib.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
-#include <math.h>
 
 #ifndef ENABLE_LIGHT_SLEEP
 #define ENABLE_LIGHT_SLEEP 1
@@ -514,12 +495,6 @@ constexpr int PIN_BUSY = 13;
 constexpr int PIN_LED = 35;
 constexpr int PIN_AWAKE_LED = 4;
 constexpr int PIN_VEXT = 36;
-constexpr int PIN_BATTERY_ENABLE = 37;
-constexpr int PIN_BATTERY_ADC = 1;
-
-constexpr float BATTERY_DIVIDER = 4.9f;
-constexpr float BATTERY_CALIBRATION = 1.0f;
-constexpr uint32_t BATTERY_INTERVAL_MS = 60000;
 
 constexpr size_t QUEUE_SIZE = 8;
 constexpr uint32_t PACKET_LIFETIME_MS = 30000;
@@ -531,7 +506,6 @@ volatile bool receivedFlag = false;
 Fanet::RecentPackets recentPackets;
 Fanet::ReceiveSchedule receiveSchedule;
 Fanet::StationDiscovery stationDiscovery;
-Fanet::BatteryProtection batteryProtection;
 bool radioSleeping = false;
 uint32_t lastLearningStart = 0;
 
@@ -551,7 +525,6 @@ uint32_t duplicateCount = 0;
 uint32_t droppedCount = 0;
 uint32_t lastTxFinished = 0;
 uint32_t txOffTimeMs = 0;
-uint32_t lastBatteryCheck = 0;
 uint32_t lastStatus = 0;
 uint32_t lastRadioActivity = 0;
 
@@ -616,61 +589,10 @@ void initializeWatchdog() {
 }
 
 void startReceiving() {
-  if (batteryProtection.suspended()) return;
   receivedFlag = false;
   radio.setPacketReceivedAction(onPacketReceived);
   requireRadio("startReceive", radio.startReceive());
   radioSleeping = false;
-}
-
-float readBatteryVoltage() {
-  digitalWrite(PIN_BATTERY_ENABLE, HIGH);
-  delay(5);
-  uint32_t sum = 0;
-  for (uint8_t i = 0; i < 12; ++i) {
-    sum += analogReadMilliVolts(PIN_BATTERY_ADC);
-    delay(1);
-  }
-  digitalWrite(PIN_BATTERY_ENABLE, LOW);
-  const float voltage = sum / 12000.0f * BATTERY_DIVIDER * BATTERY_CALIBRATION;
-  return (voltage >= 2.0f && voltage <= 4.6f) ? voltage : NAN;
-}
-
-void checkBattery() {
-  lastBatteryCheck = millis();
-  const float voltage = readBatteryVoltage();
-  if (isnan(voltage)) {
-    Serial.println("WARNING: battery ADC invalid. Check battery, pins and calibration.");
-    return;
-  }
-  Serial.printf("Battery: %.2f V\n", voltage);
-  if (!batteryProtection.update(voltage)) return;
-
-  if (batteryProtection.suspended()) {
-    radio.clearPacketReceivedAction();
-    requireRadio("battery standby", radio.standby());
-    requireRadio("battery radio sleep", radio.sleep());
-    radioSleeping = true;
-    receivedFlag = false;
-    digitalWrite(PIN_LED, LOW);
-    for (PendingPacket& slot : pending) {
-      if (slot.length != 0) {
-        slot.length = 0;
-        ++droppedCount;
-      }
-    }
-    Serial.println("BATTERY LOW: below 3.30 V; RX/TX stopped, queue cleared. "
-                   "Light sleep until above 3.60 V.");
-  } else {
-    receiveSchedule.reset();
-    recentPackets = Fanet::RecentPackets{};
-    lastLearningStart = millis();
-    lastRadioActivity = lastLearningStart;
-    stationDiscovery.begin(lastLearningStart);
-    startReceiving();
-    Serial.println("BATTERY RECOVERED: above 3.60 V; RX/TX enabled, "
-                   "restarting cadence learning.");
-  }
 }
 
 void enqueuePacket(uint8_t* packet, size_t length) {
@@ -718,7 +640,6 @@ void enqueuePacket(uint8_t* packet, size_t length) {
 }
 
 void receivePacket() {
-  if (batteryProtection.suspended()) return;
   if (!receivedFlag && digitalRead(PIN_DIO1) == LOW) {
     return;
   }
@@ -764,7 +685,6 @@ void receivePacket() {
 }
 
 void forwardPacket() {
-  if (batteryProtection.suspended()) return;
   const uint32_t now = millis();
   PendingPacket* ready = nullptr;
   for (PendingPacket& slot : pending) {
@@ -831,7 +751,6 @@ void forwardPacket() {
 }
 
 bool lightSleepReady = false;
-bool radioWakeupEnabled = false;
 constexpr uint64_t LIGHT_SLEEP_MAX_US = 100000;
 constexpr uint32_t SCHEDULED_SLEEP_MAX_MS = 60000;
 
@@ -849,34 +768,19 @@ void initLightSleep() {
     disableLightSleep("wakeup setup", error);
     return;
   }
-  radioWakeupEnabled = true;
   lightSleepReady = true;
-  Serial.println("Light sleep ready: battery protection active; "
-                 "normal sleep follows ENABLE_LIGHT_SLEEP/ENABLE_ADAPTIVE_RX.");
+  Serial.println("Light sleep ready: radio wakeup enabled.");
 }
 
 void enterLightSleep(uint64_t durationUs) {
   if (!lightSleepReady) return;
-  const bool batterySleep = batteryProtection.suspended();
-  if (radioWakeupEnabled == batterySleep) {
-    const esp_err_t wakeup = batterySleep
-        ? esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT1)
-        : esp_sleep_enable_ext1_wakeup_io(1ULL << PIN_DIO1,
-                                        ESP_EXT1_WAKEUP_ANY_HIGH);
-    if (wakeup != ESP_OK) {
-      disableLightSleep("radio wakeup configuration", wakeup);
-      return;
-    }
-    radioWakeupEnabled = !batterySleep;
-  }
   Serial.flush();
   const esp_err_t timer = esp_sleep_enable_timer_wakeup(durationUs);
   if (timer != ESP_OK) {
     disableLightSleep("timer setup", timer);
     return;
   }
-  if (!batterySleep &&
-      (receivedFlag || digitalRead(PIN_DIO1) == HIGH)) return;
+  if (receivedFlag || digitalRead(PIN_DIO1) == HIGH) return;
 
   digitalWrite(PIN_AWAKE_LED, LOW);
   const esp_err_t hold = gpio_hold_en(static_cast<gpio_num_t>(PIN_AWAKE_LED));
@@ -900,7 +804,7 @@ void enterLightSleep(uint64_t durationUs) {
   if (restore != ESP_OK) {
     disableLightSleep("DIO1 restore", restore);
   }
-  if (!batterySleep && digitalRead(PIN_DIO1) == HIGH) receivedFlag = true;
+  if (digitalRead(PIN_DIO1) == HIGH) receivedFlag = true;
   if (result != ESP_OK && result != ESP_ERR_SLEEP_REJECT &&
       result != ESP_ERR_SLEEP_TOO_SHORT_SLEEP_DURATION) {
     disableLightSleep("entry", result);
@@ -963,10 +867,6 @@ void idleLightSleep() {
         Fanet::RELEARN_INTERVAL_MS - elapsedLearningMs;
     uint32_t boundedSleepMs =
         sleepMs < untilRelearning ? sleepMs : untilRelearning;
-    const uint32_t batteryElapsedMs = millis() - lastBatteryCheck;
-    if (batteryElapsedMs >= BATTERY_INTERVAL_MS) return;
-    const uint32_t untilBatteryCheck = BATTERY_INTERVAL_MS - batteryElapsedMs;
-    if (boundedSleepMs > untilBatteryCheck) boundedSleepMs = untilBatteryCheck;
     enterLightSleep(static_cast<uint64_t>(boundedSleepMs) * 1000ULL);
     if (receivedFlag || digitalRead(PIN_DIO1) == HIGH) {
       receiveSchedule.reset();
@@ -994,10 +894,6 @@ void setup() {
   digitalWrite(PIN_AWAKE_LED, HIGH);
   pinMode(PIN_VEXT, OUTPUT);
   digitalWrite(PIN_VEXT, HIGH);
-  pinMode(PIN_BATTERY_ENABLE, OUTPUT);
-  digitalWrite(PIN_BATTERY_ENABLE, LOW);
-  analogReadResolution(12);
-  analogSetPinAttenuation(PIN_BATTERY_ADC, ADC_11db);
   Serial.begin(115200);
   delay(1200);
   Serial.println("\nFANET weather/name repeater - Heltec WiFi LoRa 32 V3");
@@ -1011,11 +907,8 @@ void setup() {
   requireRadio("DCDC regulator", radio.setRegulatorDCDC());
   requireRadio("CRC", radio.setCRC(2));
   initLightSleep();
-  checkBattery();
   startReceiving();
-  if (!batteryProtection.suspended()) {
-    Serial.println("RX ready. Only types 0x04/0x02 WITH forward=1 are relayed.");
-  }
+  Serial.println("RX ready. Only types 0x04/0x02 WITH forward=1 are relayed.");
 #if ENABLE_LIGHT_SLEEP
 #if ENABLE_ADAPTIVE_RX
   Serial.println("Adaptive RX enabled: learning forwarded weather/name cadence before radio sleep.");
@@ -1023,7 +916,7 @@ void setup() {
   Serial.println("Adaptive RX disabled: radio remains in continuous receive.");
 #endif
 #else
-  Serial.println("Normal light sleep disabled; battery protection still uses light sleep.");
+  Serial.println("Normal light sleep disabled; ESP32 remains awake.");
 #endif
   lastRadioActivity = millis();
   lastLearningStart = millis();
@@ -1031,22 +924,6 @@ void setup() {
 }
 
 void loop() {
-  if (uint32_t(millis() - lastBatteryCheck) >= BATTERY_INTERVAL_MS) {
-    checkBattery();
-  }
-  if (batteryProtection.suspended()) {
-    const esp_err_t watchdog = esp_task_wdt_reset();
-    if (watchdog != ESP_OK) {
-      watchdogSetupFailed(watchdog);
-    }
-    const uint32_t elapsedMs = millis() - lastBatteryCheck;
-    if (elapsedMs < BATTERY_INTERVAL_MS) {
-      enterLightSleep(static_cast<uint64_t>(BATTERY_INTERVAL_MS - elapsedMs) *
-                      1000ULL);
-    }
-    delay(2);
-    return;
-  }
 #if ENABLE_LIGHT_SLEEP && ENABLE_ADAPTIVE_RX
   const uint32_t now = millis();
   if (Fanet::relearningDue(now, lastLearningStart)) {
