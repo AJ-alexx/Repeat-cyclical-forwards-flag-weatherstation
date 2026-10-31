@@ -2,10 +2,9 @@
 #include <stdint.h>
 #include <string.h>
 
+// Persist learned schedules; verify them after restart before scheduled RX.
 // Every 12 hours, scan continuously for additional stations without clearing
-// learned schedules. End discovery after three quiet minutes when all periods
-// are learned, or after 20 minutes regardless of incomplete stations.
-// Names need three consistent receptions; weather needs four.
+// learned schedules. Names need three receptions; weather needs four.
 
 namespace Fanet {
 
@@ -33,20 +32,29 @@ constexpr uint32_t DISCOVERY_MAX_MS = 20UL * 60UL * 1000UL;
 
 class StationDiscovery {
  public:
-  void begin(uint32_t now) {
+  void begin(uint32_t now, uint32_t timeoutMs = DISCOVERY_MAX_MS) {
     active_ = true;
     startedAt_ = now;
     lastProtocolReceived_ = now;
+    timeoutMs_ = timeoutMs;
+    timedOut_ = false;
   }
 
   bool active(uint32_t now, bool allLearned = true) {
-    if (active_ &&
-        (uint32_t(now - startedAt_) >= DISCOVERY_MAX_MS ||
-         (allLearned &&
-          uint32_t(now - lastProtocolReceived_) >= DISCOVERY_QUIET_MS))) {
+    if (active_ && uint32_t(now - startedAt_) >= timeoutMs_) {
+      active_ = false;
+      timedOut_ = !allLearned;
+    } else if (active_ && allLearned &&
+               uint32_t(now - lastProtocolReceived_) >= DISCOVERY_QUIET_MS) {
       active_ = false;
     }
     return active_;
+  }
+
+  bool takeTimedOut() {
+    const bool result = timedOut_;
+    timedOut_ = false;
+    return result;
   }
 
   void protocolReceived(uint32_t now) {
@@ -55,8 +63,10 @@ class StationDiscovery {
 
  private:
   bool active_ = false;
+  bool timedOut_ = false;
   uint32_t startedAt_ = 0;
   uint32_t lastProtocolReceived_ = 0;
+  uint32_t timeoutMs_ = DISCOVERY_MAX_MS;
 };
 
 inline bool relearningDue(uint32_t now, uint32_t lastLearningStart) {
@@ -71,6 +81,13 @@ inline bool mayIdleSleep(uint32_t now, uint32_t lastActivity,
 
 enum class FilterResult { Allowed, Invalid, NoForwardFlag, OtherType };
 enum class ReceiveMode { Learning, Listening, Waiting };
+
+struct PersistedSchedule {
+  uint8_t address[3] = {};
+  uint8_t type = 0;
+  uint32_t period = 0;
+  uint32_t timingErrorMs = 0;
+};
 
 inline FilterResult inspect(const uint8_t* packet, size_t length) {
   if (packet == nullptr || length < 4 || length > MAX_PACKET_SIZE) {
@@ -118,6 +135,42 @@ inline FilterResult inspect(const uint8_t* packet, size_t length) {
 
 class ReceiveSchedule {
  public:
+  bool restore(const PersistedSchedule* schedules, size_t count) {
+    reset();
+    if (schedules == nullptr || count > MAX_SCHEDULES) return false;
+    for (size_t i = 0; i < count; ++i) {
+      const PersistedSchedule& schedule = schedules[i];
+      if ((schedule.type != NAME && schedule.type != WEATHER) ||
+          schedule.period < MIN_TX_PERIOD_MS ||
+          schedule.period > MAX_TX_PERIOD_MS ||
+          schedule.timingErrorMs > schedule.period) {
+        reset();
+        return false;
+      }
+      for (size_t j = 0; j < i; ++j) {
+        if (schedules[j].type == schedule.type &&
+            memcmp(schedules[j].address, schedule.address,
+                   sizeof(schedule.address)) == 0) {
+          reset();
+          return false;
+        }
+      }
+      Entry* entry = allocate(schedule.address, schedule.type);
+      if (entry == nullptr) {
+        reset();
+        return false;
+      }
+      entry->period = schedule.period;
+      entry->timingErrorMs = schedule.timingErrorMs;
+      entry->windowMarginMs = baseWindowMargin(*entry);
+      entry->stable = true;
+      entry->restored = true;
+      entry->verified = false;
+      entry->persistedPeriod = schedule.period;
+    }
+    return true;
+  }
+
   bool observe(const uint8_t* packet, size_t length, uint32_t now) {
     const FilterResult result = inspect(packet, length);
     if (result != FilterResult::Allowed) {
@@ -126,21 +179,41 @@ class ReceiveSchedule {
 
     Entry* entry = find(packet);
     if (entry == nullptr) {
-      if (trackedCount() > MAX_SCHEDULES - 2) {
+      const bool hasWeather = findByAddress(packet + 1, WEATHER) != nullptr;
+      const bool hasName = findByAddress(packet + 1, NAME) != nullptr;
+      const size_t needed = static_cast<size_t>(!hasWeather) +
+                            static_cast<size_t>(!hasName);
+      if (trackedCount() > MAX_SCHEDULES - needed) {
         overflow_ = true;
         return false;
       }
-      allocate(packet, WEATHER);
-      allocate(packet, NAME);
+      if (!hasWeather) allocate(packet + 1, WEATHER);
+      if (!hasName) allocate(packet + 1, NAME);
       entry = find(packet);
     }
 
-    const bool newProtocol = !entry->hasLastSeen;
+    const bool newProtocol = !entry->hasLastSeen && !entry->restored;
     if (entry->hasLastSeen) {
       const uint32_t interval = now - entry->lastSeen;
       // Copies/retries must not move the phase or break a learning sequence.
       if (interval < MIN_TX_PERIOD_MS) return false;
-      if (entry->stable) {
+      if (entry->restored && !entry->verified) {
+        if (matchesStoredPeriod(*entry, interval)) {
+          entry->verified = true;
+          entry->restored = false;
+          entry->nextAt = now + entry->period;
+        } else {
+          entry->restored = false;
+          entry->stable = false;
+          entry->verified = false;
+          entry->sampleCount = 0;
+          entry->sampleNext = 0;
+          relearningDetected_ = true;
+          if (interval <= MAX_TX_PERIOD_MS) {
+            learnPeriod(*entry, interval);
+          }
+        }
+      } else if (entry->stable) {
         correctPeriod(*entry, interval);
       } else if (interval <= MAX_TX_PERIOD_MS) {
         learnPeriod(*entry, interval);
@@ -151,7 +224,7 @@ class ReceiveSchedule {
     }
     entry->lastSeen = now;
     entry->hasLastSeen = true;
-    if (entry->stable) {
+    if (entry->stable && entry->verified) {
       entry->nextAt = now + entry->period;
       const uint32_t measuredMargin = baseWindowMargin(*entry);
       const uint32_t relaxedMargin =
@@ -243,11 +316,75 @@ class ReceiveSchedule {
     return !overflow_ && ready();
   }
 
+  uint32_t verificationTimeoutMs() const {
+    uint32_t timeout = DISCOVERY_MAX_MS;
+    for (const Entry& entry : entries_) {
+      if (!entry.used || !entry.restored) continue;
+      const uint64_t required =
+          static_cast<uint64_t>(entry.period) * 2 +
+          static_cast<uint64_t>(entry.period) * intervalTolerance(entry) / 100;
+      if (required > timeout) {
+        timeout = required > UINT32_MAX ? UINT32_MAX
+                                        : static_cast<uint32_t>(required);
+      }
+    }
+    return timeout;
+  }
+
+  bool takeRelearningDetected() {
+    const bool result = relearningDetected_;
+    relearningDetected_ = false;
+    return result;
+  }
+
+  bool hasUnverifiedRestored() const {
+    for (const Entry& entry : entries_) {
+      if (entry.used && entry.restored && !entry.verified) return true;
+    }
+    return false;
+  }
+
+  void discardUnverifiedRestored() {
+    for (Entry& entry : entries_) {
+      if (entry.used && entry.restored && !entry.verified) {
+        entry = Entry{};
+        persistenceDirty_ = true;
+      }
+    }
+  }
+
+  size_t exportSchedules(PersistedSchedule* schedules, size_t capacity) const {
+    size_t count = 0;
+    for (const Entry& entry : entries_) {
+      if (!entry.used || !entry.stable) continue;
+      if (count == capacity) return capacity + 1;
+      memcpy(schedules[count].address, entry.address, sizeof(entry.address));
+      schedules[count].type = entry.type;
+      schedules[count].period = entry.period;
+      schedules[count].timingErrorMs = entry.timingErrorMs;
+      ++count;
+    }
+    return count;
+  }
+
+  bool persistenceDirty() const { return persistenceDirty_; }
+
+  void markPersisted() {
+    for (Entry& entry : entries_) {
+      if (entry.used && entry.stable && entry.verified) {
+        entry.persistedPeriod = entry.period;
+      }
+    }
+    persistenceDirty_ = false;
+  }
+
   void reset() {
     for (Entry& entry : entries_) {
       entry = Entry{};
     }
     overflow_ = false;
+    persistenceDirty_ = false;
+    relearningDetected_ = false;
   }
 
  private:
@@ -259,30 +396,37 @@ class ReceiveSchedule {
     uint32_t period = 0;
     uint32_t windowMarginMs = 0;
     uint32_t timingErrorMs = 0;
+    uint32_t persistedPeriod = 0;
     uint32_t samples[PERIOD_SAMPLES] = {};
     size_t sampleCount = 0;
     size_t sampleNext = 0;
     bool used = false;
     bool hasLastSeen = false;
     bool stable = false;
+    bool restored = false;
+    bool verified = true;
   };
 
   Entry* find(const uint8_t* packet) {
     const uint8_t type = packet[0] & TYPE_MASK;
+    return findByAddress(packet + 1, type);
+  }
+
+  Entry* findByAddress(const uint8_t* address, uint8_t type) {
     for (Entry& entry : entries_) {
       if (entry.used && entry.type == type &&
-          memcmp(entry.address, packet + 1, sizeof(entry.address)) == 0) {
+          memcmp(entry.address, address, sizeof(entry.address)) == 0) {
         return &entry;
       }
     }
     return nullptr;
   }
 
-  Entry* allocate(const uint8_t* packet, uint8_t type) {
+  Entry* allocate(const uint8_t* address, uint8_t type) {
     for (Entry& entry : entries_) {
       if (entry.used) continue;
       entry = Entry{};
-      memcpy(entry.address, packet + 1, sizeof(entry.address));
+      memcpy(entry.address, address, sizeof(entry.address));
       entry.type = type;
       entry.used = true;
       return &entry;
@@ -295,7 +439,7 @@ class ReceiveSchedule {
     for (const Entry& entry : entries_) {
       if (!entry.used) continue;
       found = true;
-      if (!entry.stable) return false;
+      if (!entry.stable || !entry.verified) return false;
     }
     return found;
   }
@@ -324,7 +468,15 @@ class ReceiveSchedule {
                               : WEATHER_INTERVAL_TOLERANCE_PERCENT;
   }
 
-  static void learnPeriod(Entry& entry, uint32_t interval) {
+  static bool matchesStoredPeriod(const Entry& entry, uint32_t interval) {
+    const uint32_t difference = interval > entry.period
+                                    ? interval - entry.period
+                                    : entry.period - interval;
+    return static_cast<uint64_t>(difference) * 100 <=
+           static_cast<uint64_t>(entry.period) * intervalTolerance(entry);
+  }
+
+  void learnPeriod(Entry& entry, uint32_t interval) {
     const size_t required =
         entry.type == NAME ? NAME_INTERVALS_REQUIRED : PERIOD_SAMPLES;
     if (entry.type == NAME && entry.sampleCount != 0) {
@@ -363,9 +515,13 @@ class ReceiveSchedule {
         maximum - period > period - minimum ? maximum - period : period - minimum;
     entry.windowMarginMs = 0;
     entry.stable = true;
+    entry.verified = true;
+    entry.restored = false;
+    entry.persistedPeriod = 0;
+    persistenceDirty_ = true;
   }
 
-  static void correctPeriod(Entry& entry, uint32_t interval) {
+  void correctPeriod(Entry& entry, uint32_t interval) {
     // Compare against the original prediction, even when mode() has already
     // advanced nextAt past missed windows. A gap of N cycles is not a new period.
     uint32_t cycles = static_cast<uint32_t>(
@@ -383,6 +539,7 @@ class ReceiveSchedule {
       entry.stable = false;
       entry.sampleCount = 0;
       entry.sampleNext = 0;
+      persistenceDirty_ = true;
       return;
     }
 
@@ -395,10 +552,20 @@ class ReceiveSchedule {
     entry.period = static_cast<uint32_t>(
         static_cast<int64_t>(entry.period) +
         difference / PERIOD_CORRECTION_DIVISOR);
+    const uint32_t persistedDifference =
+        entry.period > entry.persistedPeriod
+            ? entry.period - entry.persistedPeriod
+            : entry.persistedPeriod - entry.period;
+    if (entry.persistedPeriod == 0 ||
+        static_cast<uint64_t>(persistedDifference) * 100 >= entry.period) {
+      persistenceDirty_ = true;
+    }
   }
 
   Entry entries_[MAX_SCHEDULES] = {};
   bool overflow_ = false;
+  bool persistenceDirty_ = false;
+  bool relearningDetected_ = false;
 };
 
 inline bool prepareForRelay(uint8_t* packet, size_t length) {
@@ -457,6 +624,7 @@ class RecentPackets {
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
+#include <Preferences.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 
@@ -527,6 +695,72 @@ uint32_t lastTxFinished = 0;
 uint32_t txOffTimeMs = 0;
 uint32_t lastStatus = 0;
 uint32_t lastRadioActivity = 0;
+
+namespace {
+constexpr uint32_t SCHEDULE_STORAGE_MAGIC = 0x46414E54;
+constexpr uint16_t SCHEDULE_STORAGE_VERSION = 1;
+constexpr char SCHEDULE_STORAGE_KEY[] = "schedule";
+
+struct ScheduleStorageImage {
+  uint32_t magic = SCHEDULE_STORAGE_MAGIC;
+  uint16_t version = SCHEDULE_STORAGE_VERSION;
+  uint16_t count = 0;
+  Fanet::PersistedSchedule schedules[Fanet::MAX_SCHEDULES] = {};
+};
+
+Preferences schedulePreferences;
+bool scheduleStorageReady = false;
+
+bool loadPersistentSchedule() {
+  if (!schedulePreferences.begin("fanet-cadence", false)) {
+    Serial.println("ERROR: could not open persistent cadence storage.");
+    return false;
+  }
+  scheduleStorageReady = true;
+  const size_t storedSize =
+      schedulePreferences.getBytesLength(SCHEDULE_STORAGE_KEY);
+  if (storedSize == 0) return false;
+  if (storedSize != sizeof(ScheduleStorageImage)) {
+    Serial.println("WARNING: stored cadence data has an unsupported size.");
+    return false;
+  }
+
+  ScheduleStorageImage image;
+  if (schedulePreferences.getBytes(SCHEDULE_STORAGE_KEY, &image,
+                                   sizeof(image)) != sizeof(image) ||
+      image.magic != SCHEDULE_STORAGE_MAGIC ||
+      image.version != SCHEDULE_STORAGE_VERSION ||
+      image.count > Fanet::MAX_SCHEDULES ||
+      !receiveSchedule.restore(image.schedules, image.count)) {
+    Serial.println("WARNING: stored cadence data is invalid; relearning.");
+    receiveSchedule.reset();
+    return false;
+  }
+  Serial.printf("Restored %u learned station protocols; verifying cadence in "
+                "continuous RX.\n",
+                static_cast<unsigned>(image.count));
+  return true;
+}
+
+void persistScheduleIfNeeded() {
+  if (!scheduleStorageReady || !receiveSchedule.persistenceDirty()) return;
+  ScheduleStorageImage image;
+  image.count = static_cast<uint16_t>(
+      receiveSchedule.exportSchedules(image.schedules, Fanet::MAX_SCHEDULES));
+  if (image.count > Fanet::MAX_SCHEDULES) {
+    Serial.println("ERROR: cadence storage capacity exceeded.");
+    return;
+  }
+  const size_t written =
+      schedulePreferences.putBytes(SCHEDULE_STORAGE_KEY, &image, sizeof(image));
+  if (written != sizeof(image)) {
+    Serial.println("ERROR: could not persist learned station cadence.");
+    scheduleStorageReady = false;
+    return;
+  }
+  receiveSchedule.markPersisted();
+}
+}  // namespace
 
 void ARDUINO_ISR_ATTR onPacketReceived() {
   receivedFlag = true;
@@ -662,7 +896,9 @@ void receivePacket() {
         const bool previousOverflow = receiveSchedule.capacityExceeded();
         const size_t previouslyLearned = receiveSchedule.learnedCount();
         const bool newProtocol = receiveSchedule.observe(packet, length, receivedAt);
-        if (newProtocol || receiveSchedule.learnedCount() < previouslyLearned) {
+        const bool changedProtocol = receiveSchedule.takeRelearningDetected();
+        if (newProtocol || changedProtocol ||
+            receiveSchedule.learnedCount() < previouslyLearned) {
           lastLearningStart = receivedAt;
           stationDiscovery.begin(receivedAt);
           Serial.println("Cadence learning: continuous RX for new/changed protocol.");
@@ -675,6 +911,7 @@ void receivePacket() {
           Serial.println("WARNING: station schedule capacity exceeded; "
                          "additional stations cannot be scheduled.");
         }
+        persistScheduleIfNeeded();
       }
       enqueuePacket(packet, length);
     } else {
@@ -833,6 +1070,15 @@ void idleLightSleep() {
   uint32_t waitMs = 0;
   const uint32_t now = millis();
   const bool discovering = stationDiscovery.active(now, receiveSchedule.complete());
+  if (!discovering && stationDiscovery.takeTimedOut() &&
+      receiveSchedule.hasUnverifiedRestored()) {
+    receiveSchedule.discardUnverifiedRestored();
+    persistScheduleIfNeeded();
+    lastLearningStart = now;
+    stationDiscovery.begin(now);
+    Serial.println("Cadence verification timed out; starting normal learning.");
+    return;
+  }
   const Fanet::ReceiveMode mode = receiveSchedule.mode(now, waitMs, !discovering);
   if (!queueOccupied && !discovering &&
       mode == Fanet::ReceiveMode::Waiting) {
@@ -900,6 +1146,7 @@ void setup() {
   Serial.println("External LED GPIO 4: ON = ESP32 awake, OFF = light sleep.");
   initializeWatchdog();
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
+  const bool restoredSchedule = loadPersistentSchedule();
   requireRadio("begin", radio.begin(FREQUENCY_MHZ, BANDWIDTH_KHZ, SPREADING_FACTOR,
                                     CODING_RATE, SYNC_WORD, TX_POWER_DBM,
                                     PREAMBLE_SYMBOLS, 1.8f));
@@ -920,7 +1167,10 @@ void setup() {
 #endif
   lastRadioActivity = millis();
   lastLearningStart = millis();
-  stationDiscovery.begin(lastLearningStart);
+  stationDiscovery.begin(
+      lastLearningStart,
+      restoredSchedule ? receiveSchedule.verificationTimeoutMs()
+                       : Fanet::DISCOVERY_MAX_MS);
 }
 
 void loop() {
