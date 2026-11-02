@@ -53,37 +53,30 @@ Der serielle Monitor läuft mit **115200 Baud**. Im normalen Betrieb werden Stat
 Die Skizze zeigt den vorgesehenen Aufbau. Die Panelspannung muss über einen **für Solarpanels und eine einzelne Li-Ion-/LiPo-Zelle geeigneten Solar-Laderegler** zur Batterie geführt werden. Ein einfacher TC4056/TP4056-Lader ist normalerweise kein Solarregler und hat meist keine Lastaufteilung (Power-Path). Das Solarpanel deshalb **nicht direkt** an den Akku, den 3V3-Pin oder ungeregelt an den Eingang eines einfachen TC4056-Moduls anschließen. Falls ein TC4056-Modul verwendet wird, muss dessen Eingang innerhalb der Datenblattgrenzen stabil und strombegrenzt versorgt werden; für gleichzeitiges Laden und Betreiben ist ein Lader mit Power-Path vorzuziehen.
 
 ```text
- Solarpanel
-   PV+ / PV-
-      │
-      ▼
+ Solarpanel PV+ / PV-
+          │
+          ▼
 ┌─────────────────────────────────────┐
-│ Solar-Laderegler für 1S Li-Ion/LiPo  │  Ladeschluss passend zur Zelle
-│ mit Eingangsstrombegrenzung und      │  Power-Path empfohlen
-│ möglichst Lastaufteilung             │
-└───────────────┬──────────────┬──────┘
-                │ B+/BAT+      │ B-/BAT-
-                └───────┬──────┘
-                        │
-                 1S-Akku mit
-             geeigneter Schutzschaltung
-                        │
-      Ladegerät-LOAD+/OUT+ / LOAD-/OUT-
-            (oder geschützter Akku-Ausgang)
-                        │
-                        ▼
-             ┌─────────────────────┐
-             │ 3,3-V-Buck-Boost-   │  geregelte 3,3 V über den
-             │ Wandler             │  gesamten Akkubereich
-             └─────────┬───────────┘
-                       │ OUT+ = 3,3 V
-                       ├────────────────── Board-Pin 3V3
-                       └────────────────── Board-GND ◄── gemeinsamer GND
-
- Akku B+/BAT+ ── R1 470 kΩ ──┬──────── GPIO 2 (ADC)
-                             ├── C1 100 nF ──┐
-                             └── R2 100 kΩ ──┤
- Akku B-/BAT- ──────────────────────────────┴── Board-GND
+│ Solar-Laderegler für 1S Li-Ion/LiPo  │  Solar-Eingang mit passender
+│ Eingangsstrombegrenzung, Power-Path  │  Begrenzung/Ladeschlussspannung
+└──────┬────────┬──────────┬──────────┘
+       │ BAT+   │ BAT-     │ LOAD+/OUT+ ── Wandler IN+
+       │        │          └ LOAD-/OUT- ── Wandler IN- ──┐
+       │        │                                         │
+       │     Akku-/GND ───────────────────────────────────┤ gemeinsame Masse
+       │                                                  │
+       ▼                                                  ▼
+  1S-Akku mit                                  ┌─────────────────────┐
+  Schutzschaltung                              │ 3,3-V-Buck-Boost-   │
+       │                                       │ Wandler             │
+       │                                       └──────┬────────┬────┘
+       │                                          OUT+ │        │ OUT-
+       │                                               ▼        └── Board GND
+       │                                          Board 3V3
+       │
+       └── B+/BAT+ ── R1 470 kΩ ──┬── GPIO 2 (ADC)
+                                  ├── R2 100 kΩ ── GND
+                                  └── C1 100 nF ─── GND
 
  Board GPIO 4 ── R3 1 kΩ ──|>|── Board-GND
                             LED
