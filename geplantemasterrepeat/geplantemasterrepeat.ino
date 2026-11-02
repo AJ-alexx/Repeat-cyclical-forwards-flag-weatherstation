@@ -4,7 +4,8 @@
 
 // Persist learned schedules; verify them after restart before scheduled RX.
 // Every 12 hours, scan continuously for additional stations without clearing
-// learned schedules. Names need three receptions; weather needs four.
+// learned schedules. Three missed NAME windows delete a station; ten missed
+// weather windows disable only its weather schedule. Search windows cap at 10s.
 
 namespace Fanet {
 
@@ -25,6 +26,9 @@ constexpr uint32_t PERIOD_CORRECTION_DIVISOR = 8;
 constexpr uint32_t RX_STARTUP_GUARD_MS = 50;
 constexpr uint32_t RX_TIMING_GUARD_MS = 250;
 constexpr uint32_t MIN_WINDOW_MARGIN_MS = 1000;
+constexpr uint32_t MAX_SEARCH_WINDOW_MS = 10000;
+constexpr uint8_t NAME_MISSES_BEFORE_DELETE = 3;
+constexpr uint8_t WEATHER_MISSES_BEFORE_DISABLE = 10;
 constexpr size_t MAX_SCHEDULES = 32;
 constexpr uint32_t RELEARN_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL;
 constexpr uint32_t DISCOVERY_QUIET_MS = 3UL * 60UL * 1000UL;
@@ -77,6 +81,7 @@ struct PersistedSchedule {
   uint8_t type = 0;
   uint32_t period = 0;
   uint32_t timingErrorMs = 0;
+  uint8_t searchDisabled = 0;
 };
 
 inline FilterResult inspect(const uint8_t* packet, size_t length) {
@@ -131,9 +136,12 @@ class ReceiveSchedule {
     for (size_t i = 0; i < count; ++i) {
       const PersistedSchedule& schedule = schedules[i];
       if ((schedule.type != NAME && schedule.type != WEATHER) ||
-          schedule.period < MIN_TX_PERIOD_MS ||
-          schedule.period > MAX_TX_PERIOD_MS ||
-          schedule.timingErrorMs > schedule.period) {
+          schedule.searchDisabled > 1 ||
+          (!schedule.searchDisabled &&
+           (schedule.period < MIN_TX_PERIOD_MS ||
+            schedule.period > MAX_TX_PERIOD_MS ||
+            schedule.timingErrorMs > schedule.period)) ||
+          (schedule.searchDisabled && schedule.type != WEATHER)) {
         reset();
         return false;
       }
@@ -152,10 +160,13 @@ class ReceiveSchedule {
       }
       entry->period = schedule.period;
       entry->timingErrorMs = schedule.timingErrorMs;
-      entry->windowMarginMs = baseWindowMargin(*entry);
-      entry->stable = true;
-      entry->restored = true;
-      entry->verified = false;
+      entry->searchDisabled = schedule.searchDisabled;
+      if (!entry->searchDisabled) {
+        entry->windowMarginMs = baseWindowMargin(*entry);
+        entry->stable = true;
+        entry->restored = true;
+        entry->verified = false;
+      }
       entry->persistedPeriod = schedule.period;
     }
     return true;
@@ -168,6 +179,15 @@ class ReceiveSchedule {
     }
 
     Entry* entry = find(packet);
+    if (entry != nullptr && entry->searchDisabled) {
+      const uint8_t address[3] = {entry->address[0], entry->address[1],
+                                  entry->address[2]};
+      const uint8_t type = entry->type;
+      *entry = Entry{};
+      memcpy(entry->address, address, sizeof(address));
+      entry->type = type;
+      entry->used = true;
+    }
     if (entry == nullptr) {
       const bool hasWeather = findByAddress(packet + 1, WEATHER) != nullptr;
       const bool hasName = findByAddress(packet + 1, NAME) != nullptr;
@@ -183,6 +203,7 @@ class ReceiveSchedule {
     }
 
     entry->confirmed = true;
+    entry->consecutiveMisses = 0;
     const bool newProtocol = !entry->hasLastSeen && !entry->restored;
     if (entry->hasLastSeen) {
       const uint32_t interval = now - entry->lastSeen;
@@ -229,37 +250,28 @@ class ReceiveSchedule {
   ReceiveMode mode(uint32_t now, uint32_t& waitMs,
                    bool allowIncomplete = false) {
     waitMs = 0;
-    if (!allowIncomplete && (overflow_ || !ready())) {
-      return ReceiveMode::Learning;
-    }
+    const bool learningRequired = !allowIncomplete && (overflow_ || !ready());
 
     bool listening = false;
     uint32_t shortestWait = UINT32_MAX;
     for (Entry& entry : entries_) {
-      if (!entry.used || !entry.stable || !entry.verified) continue;
+      if (!entry.used || entry.searchDisabled || !entry.stable ||
+          !entry.verified) continue;
       uint32_t opensAt =
           entry.nextAt - entry.windowMarginMs - RX_STARTUP_GUARD_MS;
       uint32_t closesAt = entry.nextAt + entry.windowMarginMs;
-      uint8_t skippedWindows = 0;
-      while (int32_t(now - closesAt) > 0 && skippedWindows < 32) {
+      while (int32_t(now - closesAt) > 0) {
         entry.windowMarginMs = widenedWindowMargin(entry.windowMarginMs,
                                                    entry.period);
         entry.nextAt += entry.period;
+        if (recordMissedWindow(entry)) break;
         opensAt = entry.nextAt - entry.windowMarginMs - RX_STARTUP_GUARD_MS;
         closesAt = entry.nextAt + entry.windowMarginMs;
-        ++skippedWindows;
       }
+      if (!entry.used || entry.searchDisabled || !entry.stable ||
+          !entry.verified) continue;
       if (int32_t(now - opensAt) >= 0 && int32_t(closesAt - now) >= 0) {
         listening = true;
-      } else if (int32_t(now - closesAt) > 0) {
-        // After many missed cycles, keep the learned phase instead of
-        // inventing a new phase from the time at which mode() was called.
-        const uint32_t skipped = static_cast<uint32_t>(
-            (static_cast<uint64_t>(uint32_t(now - closesAt)) +
-             entry.period - 1) / entry.period);
-        entry.nextAt += skipped * entry.period;
-        opensAt = entry.nextAt - entry.windowMarginMs - RX_STARTUP_GUARD_MS;
-        closesAt = entry.nextAt + entry.windowMarginMs;
       }
       if (int32_t(now - opensAt) < 0) {
         const int32_t remaining = int32_t(opensAt - now);
@@ -270,6 +282,7 @@ class ReceiveSchedule {
         listening = true;
       }
     }
+    if (learningRequired) return ReceiveMode::Learning;
     if (listening) return ReceiveMode::Listening;
     if (shortestWait == UINT32_MAX) {
       if (allowIncomplete) {
@@ -320,7 +333,7 @@ class ReceiveSchedule {
     const uint64_t elapsed = uint32_t(now - controlStart_);
     if (elapsed < CONTROL_MIN_MS) return true;
     for (const Entry& entry : entries_) {
-      if (!entry.used || !entry.stable) continue;
+      if (!entry.used || entry.searchDisabled || !entry.stable) continue;
       const bool heard = stationHeard(entry.address);
       const bool unverified = entry.restored && !entry.verified;
       if (heard && !unverified) continue;
@@ -378,12 +391,13 @@ class ReceiveSchedule {
   size_t exportSchedules(PersistedSchedule* schedules, size_t capacity) const {
     size_t count = 0;
     for (const Entry& entry : entries_) {
-      if (!entry.used || !entry.stable) continue;
+      if (!entry.used || (!entry.stable && !entry.searchDisabled)) continue;
       if (count == capacity) return capacity + 1;
       memcpy(schedules[count].address, entry.address, sizeof(entry.address));
       schedules[count].type = entry.type;
       schedules[count].period = entry.period;
       schedules[count].timingErrorMs = entry.timingErrorMs;
+      schedules[count].searchDisabled = entry.searchDisabled;
       ++count;
     }
     return count;
@@ -420,6 +434,7 @@ class ReceiveSchedule {
     uint32_t windowMarginMs = 0;
     uint32_t timingErrorMs = 0;
     uint32_t persistedPeriod = 0;
+    uint8_t consecutiveMisses = 0;
     uint32_t samples[PERIOD_SAMPLES] = {};
     size_t sampleCount = 0;
     size_t sampleNext = 0;
@@ -429,6 +444,7 @@ class ReceiveSchedule {
     bool restored = false;
     bool verified = true;
     bool confirmed = false;
+    bool searchDisabled = false;
   };
 
   bool stationHeard(const uint8_t* address) const {
@@ -471,7 +487,7 @@ class ReceiveSchedule {
   bool ready() const {
     bool found = false;
     for (const Entry& entry : entries_) {
-      if (!entry.used) continue;
+      if (!entry.used || entry.searchDisabled) continue;
       found = true;
       if (!entry.stable || !entry.verified) return false;
     }
@@ -485,6 +501,33 @@ class ReceiveSchedule {
     return margin > maximum ? maximum : margin;
   }
 
+  bool recordMissedWindow(Entry& entry) {
+    if (entry.consecutiveMisses < UINT8_MAX) ++entry.consecutiveMisses;
+    if (entry.type == NAME &&
+        entry.consecutiveMisses >= NAME_MISSES_BEFORE_DELETE) {
+      const uint8_t address[3] = {entry.address[0], entry.address[1],
+                                  entry.address[2]};
+      for (Entry& other : entries_) {
+        if (other.used &&
+            memcmp(other.address, address, sizeof(address)) == 0) {
+          other = Entry{};
+        }
+      }
+      persistenceDirty_ = true;
+      return true;
+    }
+    if (entry.type == WEATHER &&
+        entry.consecutiveMisses >= WEATHER_MISSES_BEFORE_DISABLE) {
+      entry.searchDisabled = true;
+      entry.stable = false;
+      entry.restored = false;
+      entry.verified = false;
+      persistenceDirty_ = true;
+      return true;
+    }
+    return false;
+  }
+
   static uint32_t widenedWindowMargin(uint32_t margin, uint32_t period) {
     const uint32_t maximum = maximumWindowMargin(period);
     if (margin >= maximum) return maximum;
@@ -492,9 +535,9 @@ class ReceiveSchedule {
   }
 
   static uint32_t maximumWindowMargin(uint32_t period) {
-    // At this limit adjacent windows touch: a lost phase cannot leave a
-    // permanent blind gap, even if the transmitter has changed its rhythm.
-    return period / 2;
+    const uint32_t totalWindowMargin =
+        (MAX_SEARCH_WINDOW_MS - RX_STARTUP_GUARD_MS) / 2;
+    return period / 2 < totalWindowMargin ? period / 2 : totalWindowMargin;
   }
 
   static uint32_t intervalTolerance(const Entry& entry) {
@@ -745,8 +788,22 @@ uint32_t lastRadioActivity = 0;
 
 namespace {
 constexpr uint32_t SCHEDULE_STORAGE_MAGIC = 0x46414E54;
-constexpr uint16_t SCHEDULE_STORAGE_VERSION = 1;
+constexpr uint16_t SCHEDULE_STORAGE_VERSION = 2;
 constexpr char SCHEDULE_STORAGE_KEY[] = "schedule";
+
+struct PersistedScheduleV1 {
+  uint8_t address[3] = {};
+  uint8_t type = 0;
+  uint32_t period = 0;
+  uint32_t timingErrorMs = 0;
+};
+
+struct ScheduleStorageImageV1 {
+  uint32_t magic = SCHEDULE_STORAGE_MAGIC;
+  uint16_t version = 1;
+  uint16_t count = 0;
+  PersistedScheduleV1 schedules[Fanet::MAX_SCHEDULES] = {};
+};
 
 struct ScheduleStorageImage {
   uint32_t magic = SCHEDULE_STORAGE_MAGIC;
@@ -767,6 +824,32 @@ bool loadPersistentSchedule() {
   const size_t storedSize =
       schedulePreferences.getBytesLength(SCHEDULE_STORAGE_KEY);
   if (storedSize == 0) return false;
+  if (storedSize == sizeof(ScheduleStorageImageV1)) {
+    ScheduleStorageImageV1 oldImage;
+    if (schedulePreferences.getBytes(SCHEDULE_STORAGE_KEY, &oldImage,
+                                     sizeof(oldImage)) != sizeof(oldImage) ||
+        oldImage.magic != SCHEDULE_STORAGE_MAGIC || oldImage.version != 1 ||
+        oldImage.count > Fanet::MAX_SCHEDULES) {
+      Serial.println("WARNING: stored cadence data is invalid; relearning.");
+      return false;
+    }
+    Fanet::PersistedSchedule schedules[Fanet::MAX_SCHEDULES] = {};
+    for (size_t i = 0; i < oldImage.count; ++i) {
+      memcpy(schedules[i].address, oldImage.schedules[i].address,
+             sizeof(schedules[i].address));
+      schedules[i].type = oldImage.schedules[i].type;
+      schedules[i].period = oldImage.schedules[i].period;
+      schedules[i].timingErrorMs = oldImage.schedules[i].timingErrorMs;
+    }
+    if (!receiveSchedule.restore(schedules, oldImage.count)) {
+      Serial.println("WARNING: stored cadence data is invalid; relearning.");
+      return false;
+    }
+    Serial.printf("Restored %u learned station protocols; verifying cadence in "
+                  "continuous RX.\n",
+                  static_cast<unsigned>(oldImage.count));
+    return true;
+  }
   if (storedSize != sizeof(ScheduleStorageImage)) {
     Serial.println("WARNING: stored cadence data has an unsupported size.");
     return false;
@@ -1133,6 +1216,7 @@ void idleLightSleep() {
       controlActive ||
       stationDiscovery.active(now, receiveSchedule.complete());
   const Fanet::ReceiveMode mode = receiveSchedule.mode(now, waitMs, !discovering);
+  persistScheduleIfNeeded();
   if (!queueOccupied && !discovering &&
       mode == Fanet::ReceiveMode::Waiting) {
     if (!Fanet::mayIdleSleep(millis(), lastRadioActivity, false,
