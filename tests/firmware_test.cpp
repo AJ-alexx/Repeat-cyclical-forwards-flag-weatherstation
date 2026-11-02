@@ -152,11 +152,121 @@ void testNoDeletionDuringNormalOperation() {
   schedule.observe(name, sizeof(name), 20000);
   assert(schedule.learnedCount() == 1);
   uint32_t waitMs = 0;
-  for (uint32_t t = 20000; t < 20000 + 3600000; t += 1000) {
-    schedule.mode(t, waitMs, true);
+  for (uint32_t t = 30000; t < 20000 + 3600000; t += 10000) {
+    schedule.observe(name, sizeof(name), t);
+    assert(schedule.mode(t + 1001, waitMs) == Fanet::ReceiveMode::Learning);
   }
   assert(schedule.learnedCount() == 1);
   assert(schedule.trackedCount() == 2);
+}
+
+void testThreeMissedNameWindowsDeleteWholeStation() {
+  Fanet::ReceiveSchedule schedule;
+  uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                    8, 8, 8, 0x01};
+  schedule.observe(name, sizeof(name), 0);
+  schedule.observe(name, sizeof(name), 10000);
+  schedule.observe(name, sizeof(name), 20000);
+  assert(schedule.learnedCount() == 1);
+
+  uint32_t waitMs = 0;
+  schedule.mode(31001, waitMs);
+  schedule.mode(42001, waitMs);
+  schedule.mode(54001, waitMs);
+  assert(schedule.trackedCount() == 0);
+  assert(schedule.persistenceDirty());
+  assert(schedule.observe(name, sizeof(name), 60000));
+  assert(schedule.trackedCount() == 2);
+}
+
+void testTenMissedWeatherWindowsDisableAndCanBeRelearned() {
+  Fanet::ReceiveSchedule schedule;
+  uint8_t weather[] = {static_cast<uint8_t>(Fanet::WEATHER | Fanet::FORWARD_FLAG),
+                       9, 9, 9, 0, 0, 0, 0, 0, 0, 0};
+  for (uint32_t t = 0; t <= 30000; t += 10000) {
+    schedule.observe(weather, sizeof(weather), t);
+  }
+  assert(schedule.learnedCount() == 1);
+
+  uint32_t waitMs = 0;
+  schedule.mode(41001, waitMs, true);
+  schedule.mode(52001, waitMs, true);
+  schedule.mode(64001, waitMs, true);
+  schedule.mode(64974, waitMs, true);
+  assert(waitMs == 1);
+
+  for (uint32_t t = 74976; t <= 134976; t += 10000) {
+    schedule.mode(t, waitMs, true);
+  }
+  Fanet::PersistedSchedule saved[Fanet::MAX_SCHEDULES];
+  assert(schedule.exportSchedules(saved, Fanet::MAX_SCHEDULES) == 1);
+  assert(saved[0].type == Fanet::WEATHER);
+  assert(saved[0].searchDisabled);
+
+  uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                    9, 9, 9, 0x01};
+  assert(schedule.observe(name, sizeof(name), 140000));
+  assert(schedule.exportSchedules(saved, Fanet::MAX_SCHEDULES) == 1);
+  assert(saved[0].searchDisabled);
+
+  assert(schedule.observe(weather, sizeof(weather), 150000));
+  assert(schedule.exportSchedules(saved, Fanet::MAX_SCHEDULES) == 0);
+}
+
+void testNameSchedulePersistsWithoutWeatherSchedule() {
+  resetFirmware();
+  uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                    12, 12, 12, 0x01};
+  receiveSchedule.observe(name, sizeof(name), 1000);
+  receiveSchedule.observe(name, sizeof(name), 11000);
+  receiveSchedule.observe(name, sizeof(name), 21000);
+  persistScheduleIfNeeded();
+
+  receiveSchedule.reset();
+  assert(loadPersistentSchedule());
+  Fanet::PersistedSchedule saved[Fanet::MAX_SCHEDULES];
+  assert(receiveSchedule.exportSchedules(saved, Fanet::MAX_SCHEDULES) == 1);
+  assert(saved[0].type == Fanet::NAME);
+}
+
+void testUnknownForwardedWeatherRestartsLearning() {
+  Fanet::ReceiveSchedule schedule;
+  uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
+                    13, 13, 13, 0x01};
+  uint8_t weather[] = {static_cast<uint8_t>(Fanet::WEATHER | Fanet::FORWARD_FLAG),
+                       13, 13, 13, 0, 0, 0, 0, 0, 0, 0};
+  assert(schedule.observe(name, sizeof(name), 0));
+  assert(!schedule.observe(name, sizeof(name), 10000));
+  assert(!schedule.observe(name, sizeof(name), 20000));
+  assert(schedule.observe(weather, sizeof(weather), 21000));
+}
+
+void testDisabledWeatherPersistsAndLegacyStorageLoads() {
+  resetFirmware();
+  ScheduleStorageImage image;
+  image.count = 1;
+  image.schedules[0] = storedSchedule(10, Fanet::WEATHER, 60000);
+  image.schedules[0].searchDisabled = 1;
+  const uint8_t* raw = reinterpret_cast<const uint8_t*>(&image);
+  MockPreferences::bytes.assign(raw, raw + sizeof(image));
+  assert(loadPersistentSchedule());
+  Fanet::PersistedSchedule exported[Fanet::MAX_SCHEDULES];
+  assert(receiveSchedule.exportSchedules(exported, Fanet::MAX_SCHEDULES) == 1);
+  assert(exported[0].searchDisabled == 1);
+
+  resetFirmware();
+  ScheduleStorageImageV1 oldImage;
+  oldImage.count = 1;
+  oldImage.schedules[0].address[0] = 11;
+  oldImage.schedules[0].address[1] = 11;
+  oldImage.schedules[0].address[2] = 11;
+  oldImage.schedules[0].type = Fanet::NAME;
+  oldImage.schedules[0].period = 10000;
+  const uint8_t* oldRaw = reinterpret_cast<const uint8_t*>(&oldImage);
+  MockPreferences::bytes.assign(oldRaw, oldRaw + sizeof(oldImage));
+  assert(loadPersistentSchedule());
+  assert(receiveSchedule.trackedCount() == 1);
+  assert(!receiveSchedule.complete());
 }
 
 void testLearningPhaseDeletesUnheardStation() {
@@ -248,6 +358,11 @@ int main() {
   testRestartControlDeletesUnheardStation();
   testRestartControlWaitsForSlowName();
   testNoDeletionDuringNormalOperation();
+  testThreeMissedNameWindowsDeleteWholeStation();
+  testTenMissedWeatherWindowsDisableAndCanBeRelearned();
+  testNameSchedulePersistsWithoutWeatherSchedule();
+  testUnknownForwardedWeatherRestartsLearning();
+  testDisabledWeatherPersistsAndLegacyStorageLoads();
   testLearningPhaseDeletesUnheardStation();
   testFirmwareRestartPrunesStorage();
   testStartupAndRelay();
