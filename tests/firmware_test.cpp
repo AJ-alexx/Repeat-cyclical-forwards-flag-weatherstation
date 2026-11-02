@@ -7,11 +7,16 @@ void resetFirmware() {
   Mock::now = 0;
   for (int& pin : Mock::pins) pin = LOW;
   Mock::radioWakeup = false;
+  Mock::sleepDurationUs = 0;
+  Mock::batteryAdcMillivolts = 684;
   Mock::sleepCalls = 0;
+  Mock::deepSleepCalls = 0;
   Mock::watchdogCalls = 0;
   Mock::restarts = 0;
   Mock::sleepResult = ESP_OK;
   Mock::log.clear();
+  MockPreferences::batteryLock = false;
+  MockPreferences::batteryStorageAvailable = true;
   radio.rxCalls = radio.txCalls = radio.readCalls = 0;
   radio.asleep = radio.listening = false;
   radio.callback = nullptr;
@@ -22,6 +27,9 @@ void resetFirmware() {
   radioSleeping = receivedFlag = false;
   controlActive = false;
   lightSleepReady = false;
+  batterySleepMode = radioInitialized = batteryRecovered = false;
+  batteryStorageReady = false;
+  lastBatteryCheck = 0;
   for (PendingPacket& packet : pending) packet = PendingPacket{};
   receivedCount = forwardedCount = filteredCount = duplicateCount = droppedCount = 0;
   lastTxFinished = txOffTimeMs = lastStatus = 0;
@@ -96,6 +104,49 @@ Fanet::PersistedSchedule storedSchedule(uint8_t id, uint8_t type,
   schedule.type = type;
   schedule.period = period;
   return schedule;
+}
+
+void testBatteryCutoffEntersPersistentDeepSleep() {
+  resetFirmware();
+  Mock::batteryAdcMillivolts = 579;  // 3.30 V with the 5.7:1 divider.
+  setup();
+  assert(Mock::deepSleepCalls == 1);
+  assert(Mock::sleepDurationUs == BATTERY_SLEEP_INTERVAL_US);
+  assert(MockPreferences::batteryLock);
+  assert(radio.rxCalls == 0);
+  assert(Mock::log.find("Battery lockout") != std::string::npos);
+}
+
+void testBatteryRecoveryRequiresMoreThanResumeVoltage() {
+  resetFirmware();
+  MockPreferences::batteryLock = true;
+  Mock::batteryAdcMillivolts = 631;  // About 3.60 V: remain locked.
+  setup();
+  assert(Mock::deepSleepCalls == 1);
+  assert(MockPreferences::batteryLock);
+  assert(radio.rxCalls == 0);
+
+  resetFirmware();
+  MockPreferences::batteryLock = true;
+  Mock::batteryAdcMillivolts = 632;  // About 3.61 V: unlock and learn.
+  setup();
+  assert(Mock::deepSleepCalls == 0);
+  assert(!MockPreferences::batteryLock);
+  assert(batteryRecovered);
+  assert(radio.listening);
+  assert(stationDiscovery.active(millis(), receiveSchedule.complete()));
+}
+
+void testBatteryMonitorCutsOffDuringOperation() {
+  resetFirmware();
+  setup();
+  assert(radio.listening);
+  Mock::batteryAdcMillivolts = 579;
+  Mock::now += BATTERY_CHECK_INTERVAL_MS;
+  loop();
+  assert(Mock::deepSleepCalls == 1);
+  assert(MockPreferences::batteryLock);
+  assert(radio.asleep && !radio.listening);
 }
 
 void testRestartControlDeletesUnheardStation() {
@@ -323,7 +374,7 @@ void testStartupAndRelay() {
   assert(radio.listening);
   assert(radio.callback != nullptr);
   assert(Mock::log.find("RX ready") != std::string::npos);
-  assert(Mock::log.find("BATTERY") == std::string::npos);
+  assert(Mock::log.find("Battery:") != std::string::npos);
   assert(lightSleepReady && Mock::radioWakeup);
 
   pending[0].data[0] = Fanet::NAME;
@@ -353,6 +404,9 @@ void testSleepFailureDisablesSleep() {
 }
 
 int main() {
+  testBatteryCutoffEntersPersistentDeepSleep();
+  testBatteryRecoveryRequiresMoreThanResumeVoltage();
+  testBatteryMonitorCutsOffDuringOperation();
   testStoredScheduleVerification();
   testPersistentScheduleRoundTrip();
   testRestartControlDeletesUnheardStation();

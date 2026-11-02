@@ -741,11 +741,18 @@ constexpr int PIN_BUSY = 13;
 constexpr int PIN_LED = 35;
 constexpr int PIN_AWAKE_LED = 4;
 constexpr int PIN_VEXT = 36;
+constexpr int PIN_BATTERY_ADC = 2;
 
 constexpr size_t QUEUE_SIZE = 8;
 constexpr uint32_t PACKET_LIFETIME_MS = 30000;
 constexpr uint32_t STATUS_INTERVAL_MS = 60000;
 constexpr uint32_t WATCHDOG_TIMEOUT_MS = 90000;
+constexpr uint32_t BATTERY_CHECK_INTERVAL_MS = 60000;
+constexpr uint64_t BATTERY_SLEEP_INTERVAL_US = 60ULL * 60ULL * 1000000ULL;
+constexpr uint16_t BATTERY_CUTOFF_MV = 3300;
+constexpr uint16_t BATTERY_RESUME_MV = 3600;
+constexpr uint16_t BATTERY_DIVIDER_NUMERATOR = 57;
+constexpr uint16_t BATTERY_DIVIDER_DENOMINATOR = 10;
 
 SX1262 radio = new Module(PIN_CS, PIN_DIO1, PIN_RESET, PIN_BUSY);
 volatile bool receivedFlag = false;
@@ -755,6 +762,106 @@ Fanet::StationDiscovery stationDiscovery;
 bool radioSleeping = false;
 bool controlActive = false;
 uint32_t lastLearningStart = 0;
+uint32_t lastBatteryCheck = 0;
+bool batterySleepMode = false;
+bool radioInitialized = false;
+bool batteryRecovered = false;
+Preferences batteryPreferences;
+bool batteryStorageReady = false;
+
+uint16_t readBatteryMillivolts() {
+  constexpr unsigned SAMPLE_COUNT = 16;
+  uint64_t adcMillivoltSum = 0;
+  for (unsigned sample = 0; sample < SAMPLE_COUNT; ++sample) {
+    adcMillivoltSum += analogReadMilliVolts(PIN_BATTERY_ADC);
+    delay(2);
+  }
+  const uint64_t scaledSum =
+      adcMillivoltSum * BATTERY_DIVIDER_NUMERATOR +
+      SAMPLE_COUNT * BATTERY_DIVIDER_DENOMINATOR / 2;
+  return static_cast<uint16_t>(
+      scaledSum / (SAMPLE_COUNT * BATTERY_DIVIDER_DENOMINATOR));
+}
+
+void enterBatteryDeepSleep() {
+  batterySleepMode = true;
+  Serial.println("Battery lockout: radio off; checking again in 60 minutes.");
+  if (radioInitialized) {
+    const int16_t radioResult = radio.sleep();
+    if (radioResult != RADIOLIB_ERR_NONE) {
+      Serial.printf("WARNING: radio sleep before battery lockout failed, "
+                    "RadioLib code=%d.\n",
+                    radioResult);
+    }
+  }
+  digitalWrite(PIN_LED, LOW);
+  digitalWrite(PIN_AWAKE_LED, LOW);
+  digitalWrite(PIN_VEXT, HIGH);
+  Serial.flush();
+  const esp_err_t timer =
+      esp_sleep_enable_timer_wakeup(BATTERY_SLEEP_INTERVAL_US);
+  if (timer != ESP_OK) {
+    Serial.printf("ERROR: battery sleep timer setup failed: %s (%d).\n",
+                  esp_err_to_name(timer), static_cast<int>(timer));
+    return;
+  }
+  esp_deep_sleep_start();
+}
+
+bool saveBatteryLock(bool locked) {
+  if (!batteryStorageReady ||
+      batteryPreferences.putBool("lockout", locked) != sizeof(uint8_t)) {
+    Serial.println("ERROR: could not persist battery lockout; staying fail-safe.");
+    enterBatteryDeepSleep();
+    return false;
+  }
+  return true;
+}
+
+bool checkBatteryAtBoot() {
+  if (!batteryPreferences.begin("battery", false)) {
+    Serial.println("ERROR: battery lockout storage unavailable; staying fail-safe.");
+    enterBatteryDeepSleep();
+    return false;
+  }
+  batteryStorageReady = true;
+  analogReadResolution(12);
+  analogSetPinAttenuation(PIN_BATTERY_ADC, ADC_0db);
+  pinMode(PIN_BATTERY_ADC, INPUT);
+
+  const bool locked = batteryPreferences.getBool("lockout", false);
+  const uint16_t batteryMv = readBatteryMillivolts();
+  Serial.printf("Battery: %u mV\n", static_cast<unsigned>(batteryMv));
+  if (locked) {
+    if (batteryMv <= BATTERY_RESUME_MV) {
+      enterBatteryDeepSleep();
+      return false;
+    }
+    if (!saveBatteryLock(false)) return false;
+    batteryRecovered = true;
+    Serial.println("Battery recovered above 3.6 V; starting fresh learning.");
+  } else if (batteryMv <= BATTERY_CUTOFF_MV) {
+    if (!saveBatteryLock(true)) return false;
+    enterBatteryDeepSleep();
+    return false;
+  }
+  lastBatteryCheck = millis();
+  return true;
+}
+
+void monitorBattery() {
+  if (batterySleepMode) {
+    enterBatteryDeepSleep();
+    return;
+  }
+  if (uint32_t(millis() - lastBatteryCheck) < BATTERY_CHECK_INTERVAL_MS) return;
+  lastBatteryCheck = millis();
+  const uint16_t batteryMv = readBatteryMillivolts();
+  Serial.printf("Battery: %u mV\n", static_cast<unsigned>(batteryMv));
+  if (batteryMv <= BATTERY_CUTOFF_MV && saveBatteryLock(true)) {
+    enterBatteryDeepSleep();
+  }
+}
 
 // Every learning phase is also a control phase: continuous RX for at least
 // six minutes; stations not heard during it are deleted at its end.
@@ -1281,12 +1388,14 @@ void setup() {
   delay(1200);
   Serial.println("\nFANET weather/name repeater - Heltec WiFi LoRa 32 V3");
   Serial.println("External LED GPIO 4: ON = ESP32 awake, OFF = light sleep.");
+  if (!checkBatteryAtBoot()) return;
   initializeWatchdog();
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
   const bool restoredSchedule = loadPersistentSchedule();
   requireRadio("begin", radio.begin(FREQUENCY_MHZ, BANDWIDTH_KHZ, SPREADING_FACTOR,
                                     CODING_RATE, SYNC_WORD, TX_POWER_DBM,
                                     PREAMBLE_SYMBOLS, 1.8f));
+  radioInitialized = true;
   requireRadio("DIO2 RF switch", radio.setDio2AsRfSwitch(true));
   requireRadio("DCDC regulator", radio.setRegulatorDCDC());
   requireRadio("CRC", radio.setCRC(2));
@@ -1304,7 +1413,7 @@ void setup() {
 #endif
   lastRadioActivity = millis();
   lastLearningStart = millis();
-  if (restoredSchedule) {
+  if (restoredSchedule && !batteryRecovered) {
     // Known stations: control only, no full discovery unless needed.
     controlActive = true;
     receiveSchedule.beginControl(lastLearningStart);
@@ -1316,6 +1425,12 @@ void setup() {
 }
 
 void loop() {
+  if (batterySleepMode) {
+    delay(1000);
+    return;
+  }
+  monitorBattery();
+  if (batterySleepMode) return;
 #if ENABLE_LIGHT_SLEEP && ENABLE_ADAPTIVE_RX
   const uint32_t now = millis();
   if (Fanet::relearningDue(now, lastLearningStart)) {
