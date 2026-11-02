@@ -7,7 +7,10 @@ void resetFirmware() {
   Mock::now = 0;
   for (int& pin : Mock::pins) pin = LOW;
   Mock::pins[PIN_LED_INHIBIT] = HIGH;
+  Mock::pins[PIN_EXTERNAL_RESET] = HIGH;
   Mock::radioWakeup = false;
+  Mock::gpioWakeup = false;
+  Mock::gpioWakeupPin = -1;
   Mock::sleepDurationUs = 0;
   Mock::batteryAdcMillivolts = 684;
   Mock::sleepCalls = 0;
@@ -37,6 +40,7 @@ void resetFirmware() {
   receivedCount = forwardedCount = filteredCount = duplicateCount = droppedCount = 0;
   lastTxFinished = txOffTimeMs = lastStatus = 0;
   lastRadioActivity = lastLearningStart = 0;
+  externalResetLatch = 0;
 }
 
 void testStoredScheduleVerification() {
@@ -432,6 +436,34 @@ void testGroundedInputDisablesBothExternalLeds() {
   assert(Mock::pins[PIN_TX_LED] == LOW);
 }
 
+void testExternalResetTriggersOnceUntilReleased() {
+  resetFirmware();
+  Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  setup();
+  assert(Mock::restarts == 1);
+  assert(radio.rxCalls == 0);
+
+  setup();
+  assert(Mock::restarts == 1);
+  assert(radio.listening);
+  loop();
+  assert(Mock::restarts == 1);
+
+  Mock::pins[PIN_EXTERNAL_RESET] = HIGH;
+  loop();
+  Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  loop();
+  assert(Mock::restarts == 2);
+}
+
+void testExternalResetWakesFromLightSleep() {
+  resetFirmware();
+  setup();
+  assert(lightSleepReady);
+  assert(Mock::gpioWakeup);
+  assert(Mock::gpioWakeupPin == PIN_EXTERNAL_RESET);
+}
+
 void testTxLedTurnsOffAfterTransmitError() {
   resetFirmware();
   setup();
@@ -480,6 +512,8 @@ int main() {
   testFirmwareRestartPrunesStorage();
   testStartupAndRelay();
   testGroundedInputDisablesBothExternalLeds();
+  testExternalResetTriggersOnceUntilReleased();
+  testExternalResetWakesFromLightSleep();
   testTxLedTurnsOffAfterTransmitError();
   testSleepFailureDisablesSleep();
   std::cout << "Firmware startup, relay and sleep tests passed\n";
