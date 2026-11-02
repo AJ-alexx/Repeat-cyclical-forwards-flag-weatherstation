@@ -44,9 +44,20 @@ Die Firmware verwaltet 32 Zeitplanplätze, also höchstens 16 verschiedene Absen
 
 - **GPIO 35 (`PIN_LED`):** Status-LED für das Senden weitergeleiteter Pakete; bei einem fatalen Fehler blinkt sie dauerhaft (200 ms an, 800 ms aus). Der serielle Monitor zeigt dazu `FATAL`, Vorgang und Fehlercode.
 - **GPIO 4 (`PIN_AWAKE_LED`):** externe LED leuchtet, solange der ESP32 wach ist, und ist während Light-Sleep aus. Vorwiderstand in Reihe verwenden; Schaltskizze siehe unten.
+- **GPIO 5 (`PIN_TX_LED`):** zusätzliche externe Sende-LED leuchtet während jedes Sendeversuchs und erlischt danach auch bei einem Sendefehler. Die interne LED an GPIO 35 bleibt unverändert; die externe Sende-LED zeigt keine fatalen Fehler an.
 - **GPIO 2 (`PIN_BATTERY_ADC`):** ADC-Eingang zur Akkuüberwachung über einen externen Spannungsteiler.
 
 Der serielle Monitor läuft mit **115200 Baud**. Im normalen Betrieb werden Statuszähler ungefähr jede Minute ausgegeben.
+
+### Externe Sende-LED anschließen
+
+Eine normale rote oder gelbe LED mit **470-Ohm-Vorwiderstand** anschließen:
+
+```text
+Board GPIO 5 ----[ 470 Ohm ]---- Anode (+) LED Kathode (-) ---- Board GND
+```
+
+Die Anode ist normalerweise das längere Bein; die Kathode das kürzere Bein an der abgeflachten Gehäuseseite. Nicht ohne Vorwiderstand anschließen. **GPIO 5 ist nicht der 5-V-Anschluss.** Die bestehende Wach-LED an GPIO 4 bleibt angeschlossen. Nach dem Flashen leuchtet die neue LED nur während des blockierenden Sendeaufrufs; auch ein fehlgeschlagener Sendeversuch wird angezeigt.
 
 ## Solar-, Akku- und 3,3-V-Versorgung
 
@@ -79,7 +90,10 @@ Die Skizze zeigt den vorgesehenen Aufbau. Die Panelspannung muss über einen **f
                                   └── C1 100 nF ─── GND
 
  Board GPIO 4 ── R3 1 kΩ ──|>|── Board-GND
-                            LED
+                            Wach-LED
+
+ Board GPIO 5 ── R4 470 Ω ──|>|── Board-GND
+                             Sende-LED
 ```
 
 **Anschlüsse und Bauteile**
@@ -88,7 +102,7 @@ Die Skizze zeigt den vorgesehenen Aufbau. Die Panelspannung muss über einen **f
 - Ladegerät, Wandler, Board und Teiler brauchen eine gemeinsame Masse. Bei Einspeisung in 3V3 den USB-C-Anschluss nicht gleichzeitig verwenden, außer die konkrete Boardrevision erlaubt diese Versorgung ausdrücklich.
 - Für GPIO 2 liegt **R1 = 470 kΩ** zwischen Akku-Plus und GPIO 2; **R2 = 100 kΩ** liegt von GPIO 2 nach GND. **C1 = 100 nF keramisch** liegt parallel zu R2, möglichst nahe am GPIO. Akku-Plus niemals direkt an GPIO 2 anschließen. Die Messleitung kommt an die Akku-/Zellspannung, nicht an den 3,3-V-Wandlerausgang.
 - Der Sketch rechnet mit einem Teilerfaktor von **5,7**. Mit den genannten Widerständen ergeben 4,2 V am Akku ungefähr 0,74 V am ADC. Bauteiltoleranzen und ADC-Abweichungen können die Anzeige beeinflussen; Akkuanzeige mit einem Multimeter gegenprüfen.
-- GPIO 4 steuert die externe Wach-LED: Anode über **1 kΩ** an GPIO 4, Kathode an GND. Der Vorwiderstand ist erforderlich. GPIO 35 ist im Sketch die Sende-/Fehler-LED; bei einer extern angeschlossenen LED dort ebenfalls einen passenden Vorwiderstand verwenden.
+- GPIO 4 steuert die externe Wach-LED: Anode über **1 kΩ** an GPIO 4, Kathode an GND. GPIO 5 steuert die zusätzliche Sende-LED: Anode über **470 Ω** an GPIO 5, Kathode an GND. Beide Vorwiderstände sind erforderlich. GPIO 35 bleibt die interne Sende-/Fehler-LED.
 
 Die Firmware misst die Akkuspannung beim Start und anschließend etwa jede Minute. Bei **3,3 V oder weniger** speichert sie den Unterspannungszustand und wechselt in Deep-Sleep. Im Schutzmodus wacht sie alle **60 Minuten** kurz zur Messung auf; erst oberhalb von **3,6 V** startet sie wieder. Diese Softwareabschaltung ersetzt weder eine Akku-Schutzschaltung noch einen geeigneten Ladecontroller. Deep-Sleep schaltet den externen Wandler nicht ab; dessen Ruhestrom bleibt Teil des Verbrauchs.
 

@@ -19,6 +19,8 @@ class SX1262 {
   bool asleep = false;
   bool listening = false;
   void (*callback)() = nullptr;
+  void (*onTransmit)() = nullptr;
+  int16_t transmitResult = RADIOLIB_ERR_NONE;
 
   int16_t begin(float, float, uint8_t, uint8_t, uint8_t, int8_t, uint16_t, float) {
     return RADIOLIB_ERR_NONE;
@@ -52,6 +54,7 @@ class SX1262 {
   uint32_t getTimeOnAir(size_t) { return 10000; }
   int16_t transmit(const uint8_t*, size_t) {
     ++txCalls;
-    return RADIOLIB_ERR_NONE;
+    if (onTransmit != nullptr) onTransmit();
+    return transmitResult;
   }
 };
