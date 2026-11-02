@@ -20,6 +20,8 @@ void resetFirmware() {
   radio.rxCalls = radio.txCalls = radio.readCalls = 0;
   radio.asleep = radio.listening = false;
   radio.callback = nullptr;
+  radio.onTransmit = nullptr;
+  radio.transmitResult = RADIOLIB_ERR_NONE;
   MockPreferences::bytes.clear();
   receiveSchedule.reset();
   recentPackets = Fanet::RecentPackets{};
@@ -376,6 +378,11 @@ void testStartupAndRelay() {
   assert(Mock::log.find("RX ready") != std::string::npos);
   assert(Mock::log.find("Battery:") != std::string::npos);
   assert(lightSleepReady && Mock::radioWakeup);
+  assert(Mock::pins[PIN_TX_LED] == LOW);
+  radio.onTransmit = []() {
+    assert(Mock::pins[PIN_TX_LED] == HIGH);
+    assert(Mock::pins[PIN_LED] == HIGH);
+  };
 
   pending[0].data[0] = Fanet::NAME;
   pending[0].data[1] = 1;
@@ -389,9 +396,32 @@ void testStartupAndRelay() {
   assert(radio.txCalls == 1);
   assert(radio.listening && !radio.asleep);
   assert(forwardedCount == 1);
+  assert(Mock::pins[PIN_TX_LED] == LOW);
 
   enterLightSleep(1000);
   assert(Mock::sleepCalls == 1 && Mock::radioWakeup);
+  assert(Mock::pins[PIN_TX_LED] == LOW);
+}
+
+void testTxLedTurnsOffAfterTransmitError() {
+  resetFirmware();
+  setup();
+  radio.transmitResult = -1;
+  radio.onTransmit = []() {
+    assert(Mock::pins[PIN_TX_LED] == HIGH);
+  };
+  pending[0].data[0] = Fanet::NAME;
+  pending[0].length = 4;
+  pending[0].queuedAt = millis();
+  pending[0].attemptAt = millis();
+  pending[0].waitMs = 0;
+  forwardPacket();
+  assert(radio.txCalls == 1);
+  assert(Mock::pins[PIN_TX_LED] == LOW);
+  assert(forwardedCount == 0);
+  assert(droppedCount == 1);
+  assert(radio.listening);
+  assert(Mock::log.find("DROP: TX error") != std::string::npos);
 }
 
 void testSleepFailureDisablesSleep() {
@@ -420,6 +450,7 @@ int main() {
   testLearningPhaseDeletesUnheardStation();
   testFirmwareRestartPrunesStorage();
   testStartupAndRelay();
+  testTxLedTurnsOffAfterTransmitError();
   testSleepFailureDisablesSleep();
   std::cout << "Firmware startup, relay and sleep tests passed\n";
 }

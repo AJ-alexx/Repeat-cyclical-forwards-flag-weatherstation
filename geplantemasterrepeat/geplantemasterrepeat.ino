@@ -740,6 +740,7 @@ constexpr int PIN_DIO1 = 14;
 constexpr int PIN_BUSY = 13;
 constexpr int PIN_LED = 35;
 constexpr int PIN_AWAKE_LED = 4;
+constexpr int PIN_TX_LED = 5;
 constexpr int PIN_VEXT = 36;
 constexpr int PIN_BATTERY_ADC = 2;
 
@@ -796,6 +797,7 @@ void enterBatteryDeepSleep() {
   }
   digitalWrite(PIN_LED, LOW);
   digitalWrite(PIN_AWAKE_LED, LOW);
+  digitalWrite(PIN_TX_LED, LOW);
   digitalWrite(PIN_VEXT, HIGH);
   Serial.flush();
   const esp_err_t timer =
@@ -1200,8 +1202,10 @@ void forwardPacket() {
   }
   const uint32_t airtimeMs = (radio.getTimeOnAir(ready->length) + 999UL) / 1000UL;
   digitalWrite(PIN_LED, HIGH);
+  digitalWrite(PIN_TX_LED, HIGH);
   const uint32_t started = millis();
   const int16_t state = radio.transmit(ready->data, ready->length);
+  digitalWrite(PIN_TX_LED, LOW);
   lastTxFinished = millis();
   lastRadioActivity = lastTxFinished;
   const uint32_t elapsed = lastTxFinished - started;
@@ -1380,6 +1384,8 @@ void idleLightSleep() {
 void setup() {
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, LOW);
+  pinMode(PIN_TX_LED, OUTPUT);
+  digitalWrite(PIN_TX_LED, LOW);
   pinMode(PIN_AWAKE_LED, OUTPUT);
   digitalWrite(PIN_AWAKE_LED, HIGH);
   pinMode(PIN_VEXT, OUTPUT);
@@ -1388,6 +1394,7 @@ void setup() {
   delay(1200);
   Serial.println("\nFANET weather/name repeater - Heltec WiFi LoRa 32 V3");
   Serial.println("External LED GPIO 4: ON = ESP32 awake, OFF = light sleep.");
+  Serial.println("External TX LED GPIO 5: ON = transmitting, OFF = idle.");
   if (!checkBatteryAtBoot()) return;
   initializeWatchdog();
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
