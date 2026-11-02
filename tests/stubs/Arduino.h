@@ -10,6 +10,7 @@ constexpr int HIGH = 1;
 constexpr int LOW = 0;
 constexpr int OUTPUT = 1;
 constexpr int INPUT = 0;
+constexpr int INPUT_PULLUP = 2;
 constexpr int ADC_0db = 0;
 constexpr unsigned portNUM_PROCESSORS = 2;
 using esp_err_t = int;

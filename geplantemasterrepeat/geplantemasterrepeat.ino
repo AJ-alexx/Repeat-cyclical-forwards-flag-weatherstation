@@ -741,6 +741,7 @@ constexpr int PIN_BUSY = 13;
 constexpr int PIN_LED = 35;
 constexpr int PIN_AWAKE_LED = 4;
 constexpr int PIN_TX_LED = 5;
+constexpr int PIN_LED_INHIBIT = 6;
 constexpr int PIN_VEXT = 36;
 constexpr int PIN_BATTERY_ADC = 2;
 
@@ -769,6 +770,10 @@ bool radioInitialized = false;
 bool batteryRecovered = false;
 Preferences batteryPreferences;
 bool batteryStorageReady = false;
+
+void setExternalLed(int pin, bool on) {
+  digitalWrite(pin, on && digitalRead(PIN_LED_INHIBIT) != LOW ? HIGH : LOW);
+}
 
 uint16_t readBatteryMillivolts() {
   constexpr unsigned SAMPLE_COUNT = 16;
@@ -1202,10 +1207,10 @@ void forwardPacket() {
   }
   const uint32_t airtimeMs = (radio.getTimeOnAir(ready->length) + 999UL) / 1000UL;
   digitalWrite(PIN_LED, HIGH);
-  digitalWrite(PIN_TX_LED, HIGH);
+  setExternalLed(PIN_TX_LED, true);
   const uint32_t started = millis();
   const int16_t state = radio.transmit(ready->data, ready->length);
-  digitalWrite(PIN_TX_LED, LOW);
+  setExternalLed(PIN_TX_LED, false);
   lastTxFinished = millis();
   lastRadioActivity = lastTxFinished;
   const uint32_t elapsed = lastTxFinished - started;
@@ -1262,7 +1267,7 @@ void enterLightSleep(uint64_t durationUs) {
   digitalWrite(PIN_AWAKE_LED, LOW);
   const esp_err_t hold = gpio_hold_en(static_cast<gpio_num_t>(PIN_AWAKE_LED));
   if (hold != ESP_OK) {
-    digitalWrite(PIN_AWAKE_LED, HIGH);
+    setExternalLed(PIN_AWAKE_LED, true);
     disableLightSleep("awake LED hold", hold);
     return;
   }
@@ -1272,7 +1277,7 @@ void enterLightSleep(uint64_t durationUs) {
   if (ledRelease != ESP_OK) {
     disableLightSleep("awake LED hold release", ledRelease);
   }
-  digitalWrite(PIN_AWAKE_LED, HIGH);
+  setExternalLed(PIN_AWAKE_LED, true);
   const esp_err_t release = rtc_gpio_hold_dis(static_cast<gpio_num_t>(PIN_DIO1));
   if (release != ESP_OK) {
     disableLightSleep("DIO1 hold release", release);
@@ -1382,12 +1387,13 @@ void idleLightSleep() {
 #endif  // ENABLE_LIGHT_SLEEP
 
 void setup() {
+  pinMode(PIN_LED_INHIBIT, INPUT_PULLUP);
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, LOW);
   pinMode(PIN_TX_LED, OUTPUT);
   digitalWrite(PIN_TX_LED, LOW);
   pinMode(PIN_AWAKE_LED, OUTPUT);
-  digitalWrite(PIN_AWAKE_LED, HIGH);
+  setExternalLed(PIN_AWAKE_LED, true);
   pinMode(PIN_VEXT, OUTPUT);
   digitalWrite(PIN_VEXT, HIGH);
   Serial.begin(115200);
@@ -1395,6 +1401,7 @@ void setup() {
   Serial.println("\nFANET weather/name repeater - Heltec WiFi LoRa 32 V3");
   Serial.println("External LED GPIO 4: ON = ESP32 awake, OFF = light sleep.");
   Serial.println("External TX LED GPIO 5: ON = transmitting, OFF = idle.");
+  Serial.println("Ground GPIO 6 to disable both external LEDs.");
   if (!checkBatteryAtBoot()) return;
   initializeWatchdog();
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
@@ -1436,6 +1443,7 @@ void loop() {
     delay(1000);
     return;
   }
+  setExternalLed(PIN_AWAKE_LED, true);
   monitorBattery();
   if (batterySleepMode) return;
 #if ENABLE_LIGHT_SLEEP && ENABLE_ADAPTIVE_RX
