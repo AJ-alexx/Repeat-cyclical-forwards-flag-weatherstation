@@ -6,6 +6,7 @@
 void resetFirmware() {
   Mock::now = 0;
   for (int& pin : Mock::pins) pin = LOW;
+  Mock::pins[PIN_LED_INHIBIT] = HIGH;
   Mock::radioWakeup = false;
   Mock::sleepDurationUs = 0;
   Mock::batteryAdcMillivolts = 684;
@@ -379,6 +380,7 @@ void testStartupAndRelay() {
   assert(Mock::log.find("Battery:") != std::string::npos);
   assert(lightSleepReady && Mock::radioWakeup);
   assert(Mock::pins[PIN_TX_LED] == LOW);
+  assert(Mock::pins[PIN_AWAKE_LED] == HIGH);
   radio.onTransmit = []() {
     assert(Mock::pins[PIN_TX_LED] == HIGH);
     assert(Mock::pins[PIN_LED] == HIGH);
@@ -400,6 +402,33 @@ void testStartupAndRelay() {
 
   enterLightSleep(1000);
   assert(Mock::sleepCalls == 1 && Mock::radioWakeup);
+  assert(Mock::pins[PIN_TX_LED] == LOW);
+}
+
+void testGroundedInputDisablesBothExternalLeds() {
+  resetFirmware();
+  Mock::pins[PIN_LED_INHIBIT] = LOW;
+  setup();
+  assert(Mock::pins[PIN_AWAKE_LED] == LOW);
+
+  Mock::pins[PIN_LED_INHIBIT] = HIGH;
+  loop();
+  assert(Mock::pins[PIN_AWAKE_LED] == HIGH);
+
+  Mock::pins[PIN_LED_INHIBIT] = LOW;
+  loop();
+  assert(Mock::pins[PIN_AWAKE_LED] == LOW);
+
+  pending[0].data[0] = Fanet::NAME;
+  pending[0].length = 4;
+  pending[0].queuedAt = millis();
+  pending[0].attemptAt = millis();
+  pending[0].waitMs = 0;
+  radio.onTransmit = []() {
+    assert(Mock::pins[PIN_TX_LED] == LOW);
+  };
+  forwardPacket();
+  assert(radio.txCalls == 1);
   assert(Mock::pins[PIN_TX_LED] == LOW);
 }
 
@@ -450,6 +479,7 @@ int main() {
   testLearningPhaseDeletesUnheardStation();
   testFirmwareRestartPrunesStorage();
   testStartupAndRelay();
+  testGroundedInputDisablesBothExternalLeds();
   testTxLedTurnsOffAfterTransmitError();
   testSleepFailureDisablesSleep();
   std::cout << "Firmware startup, relay and sleep tests passed\n";

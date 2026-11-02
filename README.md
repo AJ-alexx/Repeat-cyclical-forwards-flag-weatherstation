@@ -45,6 +45,7 @@ Die Firmware verwaltet 32 Zeitplanplätze, also höchstens 16 verschiedene Absen
 - **GPIO 35 (`PIN_LED`):** Status-LED für das Senden weitergeleiteter Pakete; bei einem fatalen Fehler blinkt sie dauerhaft (200 ms an, 800 ms aus). Der serielle Monitor zeigt dazu `FATAL`, Vorgang und Fehlercode.
 - **GPIO 4 (`PIN_AWAKE_LED`):** externe LED leuchtet, solange der ESP32 wach ist, und ist während Light-Sleep aus. Vorwiderstand in Reihe verwenden; Schaltskizze siehe unten.
 - **GPIO 5 (`PIN_TX_LED`):** zusätzliche externe Sende-LED leuchtet während jedes Sendeversuchs und erlischt danach auch bei einem Sendefehler. Die interne LED an GPIO 35 bleibt unverändert; die externe Sende-LED zeigt keine fatalen Fehler an.
+- **GPIO 6 (`PIN_LED_INHIBIT`):** freier Eingang mit internem Pull-up. Wird GPIO 6 mit GND verbunden, bleiben beide externen LEDs aus. Die interne Status-LED an GPIO 35 bleibt davon unberührt.
 - **GPIO 2 (`PIN_BATTERY_ADC`):** ADC-Eingang zur Akkuüberwachung über einen externen Spannungsteiler.
 
 Der serielle Monitor läuft mit **115200 Baud**. Im normalen Betrieb werden Statuszähler ungefähr jede Minute ausgegeben.
@@ -58,6 +59,21 @@ Board GPIO 5 ----[ 470 Ohm ]---- Anode (+) LED Kathode (-) ---- Board GND
 ```
 
 Die Anode ist normalerweise das längere Bein; die Kathode das kürzere Bein an der abgeflachten Gehäuseseite. Nicht ohne Vorwiderstand anschließen. **GPIO 5 ist nicht der 5-V-Anschluss.** Die bestehende Wach-LED an GPIO 4 bleibt angeschlossen. Nach dem Flashen leuchtet die neue LED nur während des blockierenden Sendeaufrufs; auch ein fehlgeschlagener Sendeversuch wird angezeigt.
+
+### Beide externen LEDs mit GND abschalten
+
+GPIO 6 dient als Schalteingang. Ein Schalter oder Jumper zwischen GPIO 6 und GND schaltet die externe Wach-LED (GPIO 4) und die externe Sende-LED (GPIO 5) aus. Im offenen Zustand zieht der interne Pull-up den Eingang auf HIGH und die normale LED-Steuerung bleibt aktiv. Für diesen Schalteingang ist kein zusätzlicher Widerstand nötig.
+
+```text
+GPIO 4 ──[ 1 kΩ ]──|>|── GND     Wach-LED
+GPIO 5 ──[470 Ω ]──|>|── GND     Sende-LED
+
+GPIO 6 ──────o/ o────── GND      Schalter/Jumper
+             offen = LEDs normal
+             geschlossen = beide externen LEDs aus
+```
+
+GPIO 6 ist im Sketch nicht anderweitig belegt; Funk-, Akku- und LED-Pins bleiben unverändert. GPIO 35 (interne Status-LED) wird durch den Schalter nicht beeinflusst.
 
 ## Solar-, Akku- und 3,3-V-Versorgung
 
