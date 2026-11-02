@@ -9,6 +9,8 @@
 constexpr int HIGH = 1;
 constexpr int LOW = 0;
 constexpr int OUTPUT = 1;
+constexpr int INPUT = 0;
+constexpr int ADC_0db = 0;
 constexpr unsigned portNUM_PROCESSORS = 2;
 using esp_err_t = int;
 using gpio_num_t = int;
@@ -24,7 +26,9 @@ inline uint32_t now = 0;
 inline int pins[40] = {};
 inline bool radioWakeup = false;
 inline uint64_t sleepDurationUs = 0;
+inline uint32_t batteryAdcMillivolts = 684;
 inline unsigned sleepCalls = 0;
+inline unsigned deepSleepCalls = 0;
 inline unsigned watchdogCalls = 0;
 inline unsigned restarts = 0;
 inline esp_err_t sleepResult = ESP_OK;
@@ -36,6 +40,11 @@ inline void delay(uint32_t duration) { Mock::now += duration; }
 inline void pinMode(int, int) {}
 inline void digitalWrite(int pin, int value) { Mock::pins[pin] = value; }
 inline int digitalRead(int pin) { return Mock::pins[pin]; }
+inline void analogReadResolution(int) {}
+inline void analogSetPinAttenuation(int, int) {}
+inline uint32_t analogReadMilliVolts(int) {
+  return Mock::batteryAdcMillivolts;
+}
 
 struct SerialMock {
   void begin(int) {}
@@ -83,6 +92,7 @@ inline esp_err_t esp_sleep_enable_timer_wakeup(uint64_t duration) {
   Mock::sleepDurationUs = duration;
   return ESP_OK;
 }
+inline void esp_deep_sleep_start() { ++Mock::deepSleepCalls; }
 inline esp_err_t esp_light_sleep_start() {
   ++Mock::sleepCalls;
   if (Mock::sleepResult == ESP_OK) {

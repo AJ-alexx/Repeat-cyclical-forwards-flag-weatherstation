@@ -40,6 +40,7 @@ class SX1262 {
   }
   int16_t sleep() {
     asleep = true;
+    listening = false;
     return RADIOLIB_ERR_NONE;
   }
   size_t getPacketLength() { return 5; }

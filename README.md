@@ -56,11 +56,28 @@ Den seriellen Monitor auf **115200 Baud** stellen. Beim Start sind `RX ready` un
 
 ## Akku und Solarversorgung
 
-Die Firmware misst die Akkuspannung nicht und schaltet Senden oder Empfangen nicht anhand einer Spannungsschwelle ab. Der Akku beziehungsweise dessen eigene Schutzschaltung übernimmt den Unterspannungsschutz.
+Die Firmware misst die Akkuspannung über einen **externen Spannungsteiler an GPIO 2**. Das ist nötig, wenn das Board über einen 3,3-V-Regler am 3V3-Pin versorgt wird und der Akkuanschluss des Boards frei bleibt. Den Spannungsteiler direkt zwischen Akku und Board-GND anschließen:
 
-Eine geeignete 5-V-Versorgung über USB-C kann das Heltec WiFi LoRa 32 V3 versorgen und den angeschlossenen, kompatiblen 1S-Li-Ion-/LiPo-Akku über die Ladeelektronik des Boards laden. Ein Solarpanel kann dafür mit einem passenden Solarregler beziehungsweise DC/DC-Wandler verwendet werden, der eine stabile, geregelte 5-V-Ausgabe für USB-C liefert. Ein Panel liefert je nach Licht und Last keine konstante Spannung: nicht direkt an den Akku anschließen und nicht ungeregelt mit USB-C verbinden. Boardrevision, zulässigen Akkutyp und Ladehinweise des Herstellers vor dem Aufbau prüfen; die Solarversorgung muss auch den Verbrauch der Station decken.
+```text
+Akku + ──┬────────────── Regler IN+
+         │
+       470 kΩ
+         │
+         ├────────────── GPIO 2
+         ├── 100 nF ──┐
+         │            │
+       100 kΩ         │
+         │            │
+Akku − ──┴────────────┴── Board GND ── Regler IN−/OUT−
 
-Beim Heltec WiFi LoRa 32 V3 kann eine geeignete 5-V-Versorgung über USB-C das Board versorgen und den angeschlossenen, kompatiblen 1S-Li-Ion-/LiPo-Akku über die Ladeelektronik des Boards laden. Ein Solarpanel kann dafür mit einem passenden Solarregler beziehungsweise DC/DC-Wandler verwendet werden, der eine stabile, geregelte 5-V-Ausgabe für USB-C liefert. Ein Panel liefert je nach Licht und Last keine konstante Spannung: nicht direkt an den Akku anschließen und nicht ungeregelt mit USB-C verbinden. Boardrevision, zulässigen Akkutyp und Ladehinweise des Herstellers vor dem Aufbau prüfen; die Solarversorgung muss auch den Verbrauch der Station decken.
+Regler OUT+ ───────────── Board 3V3
+```
+
+Der Kondensator liegt parallel zum 100-kΩ-Widerstand und möglichst nahe an GPIO 2; ein keramischer 100-nF-Kondensator ist ungepolt. Akku-Plus darf nicht direkt an GPIO 2 oder den Board-3V3-Pin. Reglerausgang vor dem Anschluss auf 3,3 V einstellen und messen; der Regler muss den gesamten Akkuspannungsbereich abdecken und bis zur 3,3-V-Abschaltschwelle eine stabile Versorgung liefern. Bei 4,2 V Akkuspannung liegen am GPIO ungefähr 0,74 V an; die Firmware verwendet den Teilerfaktor 5,7. Die tatsächliche Messung hängt von den Widerstandstoleranzen ab und sollte mit einem Multimeter abgeglichen werden.
+
+Die Firmware prüft die Akkuspannung im normalen Betrieb jede Minute. Bei **3,3 V oder weniger** speichert sie den Unterspannungszustand und wechselt in Deep-Sleep. Im Schutzmodus wacht sie nur alle **60 Minuten** kurz zur Messung auf; erst oberhalb von **3,6 V** startet wieder die Lernphase. Der Akkuanschluss am Board bleibt in diesem Aufbau frei; der Spannungsteiler muss dauerhaft mit dem Akku verbunden sein. Die Ladeelektronik beziehungsweise ein passender externer LiPo-Lader muss die Ladeschlussspannung von 4,2 V begrenzen. Deep-Sleep schaltet einen externen Regler nicht ab; dessen Ruhestrom bleibt Teil des Verbrauchs.
+
+Eine geeignete 5-V-Versorgung über USB-C kann das Heltec WiFi LoRa 32 V3 versorgen und einen kompatiblen 1S-Li-Ion-/LiPo-Akku über die Ladeelektronik des Boards laden, wenn der Akku am vorgesehenen Boardanschluss angeschlossen ist. Ein Solarpanel benötigt einen passenden Solarregler beziehungsweise DC/DC-Wandler; es darf nicht direkt am Akku oder ungeregelt an USB-C angeschlossen werden. Boardrevision, zulässigen Akkutyp und Ladehinweise des Herstellers vor dem Aufbau prüfen.
 
 ## Einstellungen und Funkprofil
 
