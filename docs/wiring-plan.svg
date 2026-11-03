@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120" role="img" aria-labelledby="title description">
+  <title id="title">Gesamt-Verdrahtungsplan der Wetterstation</title>
+  <desc id="description">Solarpanel und Solar-Laderegler versorgen einen geschützten Einzelzellen-Akku und einen 3,3-Volt-Wandler. Der Plan zeigt außerdem den Akku-Spannungsteiler an GPIO 2, zwei LEDs an GPIO 4 und 5 sowie Schalter an GPIO 6 und 7.</desc>
+  <defs>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #17212b; }
+      .title { font-size: 32px; font-weight: 700; }
+      .subtitle { font-size: 17px; fill: #526170; }
+      .heading { font-size: 19px; font-weight: 700; }
+      .label { font-size: 15px; }
+      .small { font-size: 13px; fill: #526170; }
+      .pin { font-size: 14px; font-weight: 700; }
+      .box { fill: #fff; stroke: #8a99a8; stroke-width: 2; }
+      .panel { fill: #f5f8fb; stroke: #c4d0dc; stroke-width: 1.5; }
+      .power { fill: none; stroke: #c63b3b; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .ground { fill: none; stroke: #354454; stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; }
+      .signal { fill: none; stroke: #2874a6; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .sense { fill: none; stroke: #c47a16; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .dot { fill: #354454; }
+    </style>
+    <marker id="arrow-orange" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#c47a16"/>
+    </marker>
+  </defs>
+
+  <rect width="1600" height="1120" fill="#fff"/>
+  <text x="50" y="58" class="title">Gesamt-Verdrahtungsplan</text>
+  <text x="50" y="88" class="subtitle">Solarversorgung · 1S-Akku · Heltec WiFi LoRa 32 (V3) · Messung und Bedienelemente</text>
+
+  <rect x="40" y="120" width="695" height="475" rx="18" class="panel"/>
+  <text x="65" y="155" class="heading">Versorgung</text>
+  <rect x="770" y="120" width="790" height="475" rx="18" class="panel"/>
+  <text x="795" y="155" class="heading">Board, Akku-Messung und externe LEDs</text>
+  <rect x="40" y="620" width="1520" height="345" rx="18" class="panel"/>
+  <text x="65" y="655" class="heading">Schalter und gemeinsame Masse</text>
+
+  <rect x="70" y="205" width="205" height="125" rx="12" class="box"/>
+  <text x="172" y="242" text-anchor="middle" class="heading">Solarpanel</text>
+  <text x="172" y="274" text-anchor="middle" class="label">PV+  (+)</text>
+  <text x="172" y="305" text-anchor="middle" class="label">PV−  (−)</text>
+  <path d="M275 274 H325" class="power"/>
+  <path d="M275 305 H325" class="ground"/>
+
+  <rect x="325" y="185" width="350" height="185" rx="12" class="box"/>
+  <text x="500" y="218" text-anchor="middle" class="heading">Solar-Laderegler</text>
+  <text x="500" y="245" text-anchor="middle" class="small">für 1S Li-Ion/LiPo, mit Power-Path</text>
+  <text x="340" y="278" class="pin">PV+</text>
+  <text x="340" y="309" class="pin">PV−</text>
+  <text x="545" y="278" class="pin">BAT+</text>
+  <text x="545" y="309" class="pin">BAT−</text>
+  <text x="545" y="340" class="pin">LOAD+/OUT+</text>
+  <text x="545" y="363" class="pin">LOAD−/OUT−</text>
+  <circle cx="325" cy="274" r="5" fill="#c63b3b"/>
+  <circle cx="325" cy="305" r="5" fill="#354454"/>
+
+  <rect x="70" y="420" width="235" height="125" rx="12" class="box"/>
+  <text x="187" y="455" text-anchor="middle" class="heading">1S-Akku</text>
+  <text x="187" y="483" text-anchor="middle" class="label">mit Schutzschaltung</text>
+  <text x="225" y="448" class="pin">B+ / BAT+</text>
+  <text x="245" y="526" class="pin">B−</text>
+  <path d="M675 278 H720 V440 H305" class="power"/>
+  <path d="M675 309 H700 V568 H305 V520" class="ground"/>
+  <circle cx="305" cy="440" r="5" fill="#c63b3b"/>
+  <circle cx="700" cy="568" r="5" class="dot"/>
+
+  <rect x="365" y="430" width="285" height="120" rx="12" class="box"/>
+  <text x="507" y="465" text-anchor="middle" class="heading">3,3-V-Buck-Boost</text>
+  <text x="380" y="485" class="pin">IN+</text>
+  <text x="380" y="515" class="pin">IN−</text>
+  <text x="585" y="485" class="pin">OUT+</text>
+  <text x="585" y="515" class="pin">OUT−</text>
+  <path d="M675 340 H720 V415 H350 V490 H365" class="power"/>
+  <path d="M675 363 H745 V568 H350 V520 H365" class="ground"/>
+  <text x="430" y="585" class="small">Ausgang auf 3,3 V einstellen und vor Anschluss messen.</text>
+
+  <rect x="850" y="195" width="360" height="380" rx="14" fill="#eef5fb" stroke="#2874a6" stroke-width="2.5"/>
+  <text x="1030" y="235" text-anchor="middle" class="heading">Heltec WiFi LoRa 32 (V3)</text>
+  <text x="1030" y="263" text-anchor="middle" class="small">ESP32-S3 · SX1262</text>
+  <line x1="850" y1="290" x2="1210" y2="290" stroke="#c4d0dc" stroke-width="1.5"/>
+  <text x="875" y="326" class="pin">3V3</text>
+  <text x="875" y="362" class="pin">GND</text>
+  <text x="875" y="408" class="pin">GPIO 2  ·  ADC</text>
+  <text x="875" y="448" class="pin">GPIO 4  ·  Wach-LED</text>
+  <text x="875" y="488" class="pin">GPIO 5  ·  Sende-LED</text>
+  <text x="875" y="528" class="pin">GPIO 6 · LED-Sperre</text>
+  <text x="875" y="558" class="pin">GPIO 7 · Reset</text>
+
+  <path d="M650 490 H795 V326 H850" class="power"/>
+  <path d="M650 520 H815 V362 H850" class="ground"/>
+
+  <rect x="1260" y="200" width="250" height="80" rx="12" class="box"/>
+  <text x="1385" y="232" text-anchor="middle" class="label">R3  1 kΩ</text>
+  <text x="1385" y="257" text-anchor="middle" class="small">Wach-LED · Anode → Kathode</text>
+  <path d="M1210 448 H1260" class="signal"/>
+  <path d="M1510 240 H1530" class="ground"/>
+
+  <rect x="1260" y="310" width="250" height="80" rx="12" class="box"/>
+  <text x="1385" y="342" text-anchor="middle" class="label">R4  470 Ω</text>
+  <text x="1385" y="367" text-anchor="middle" class="small">Sende-LED · Anode → Kathode</text>
+  <path d="M1210 488 H1260" class="signal"/>
+  <path d="M1510 350 H1540" class="ground"/>
+
+  <text x="1257" y="425" class="small">LED-Kathoden an GND</text>
+  <text x="1257" y="448" class="small">GPIO 5 ist kein 5-V-Anschluss.</text>
+
+  <rect x="70" y="700" width="320" height="150" rx="12" class="box"/>
+  <text x="230" y="735" text-anchor="middle" class="heading">Akku-Spannungsteiler</text>
+  <text x="115" y="773" class="label">R1 470 kΩ ───┬── GPIO 2</text>
+  <text x="115" y="805" class="label">             ├── R2 100 kΩ ─ GND</text>
+  <text x="115" y="837" class="label">             └── C1 100 nF ─ GND</text>
+  <path d="M305 440 H340 V680 H95 V773 H105" class="sense"/>
+  <circle cx="105" cy="773" r="5" fill="#c47a16"/>
+  <path d="M390 773 H790 V408 H850" class="sense" marker-end="url(#arrow-orange)"/>
+  <text x="435" y="755" class="small">Messpunkt am Akku, nicht am Wandlerausgang</text>
+
+  <rect x="455" y="700" width="300" height="150" rx="12" class="box"/>
+  <text x="605" y="735" text-anchor="middle" class="heading">GPIO 6 · LED-Sperre</text>
+  <text x="605" y="780" text-anchor="middle" class="label">GPIO 6 ─── Schalter/Jumper ─── GND</text>
+  <text x="605" y="817" text-anchor="middle" class="small">geschlossen = beide externen LEDs aus</text>
+  <path d="M1030 528 V880 H605 V850" class="signal"/>
+
+  <rect x="815" y="700" width="300" height="150" rx="12" class="box"/>
+  <text x="965" y="735" text-anchor="middle" class="heading">GPIO 7 · Reset</text>
+  <text x="965" y="780" text-anchor="middle" class="label">GPIO 7 ─── Taster/Jumper ─── GND</text>
+  <text x="965" y="817" text-anchor="middle" class="small">geschlossen = Reset-/Löschvorgang</text>
+  <path d="M1050 558 V865 H965 V850" class="signal"/>
+
+  <path d="M815 362 V920 H1335" class="ground"/>
+  <path d="M1530 280 V920" class="ground"/>
+  <path d="M1540 350 V920" class="ground"/>
+  <path d="M230 850 V920" class="ground"/>
+  <path d="M605 850 V920" class="ground"/>
+  <path d="M965 850 V920" class="ground"/>
+  <path d="M1335 920 H1540" class="ground"/>
+  <circle cx="815" cy="920" r="6" class="dot"/>
+  <circle cx="1335" cy="920" r="6" class="dot"/>
+  <text x="1375" y="895" class="pin">gemeinsame GND-Masse</text>
+
+  <text x="65" y="1005" class="small">Rot = Plusversorgung · Dunkelgrau = GND · Blau = GPIO/Schalter · Orange = Akku-Messleitung</text>
+  <text x="65" y="1032" class="small">Keine 5 V an 3V3 und Akku-Plus niemals direkt an GPIO 2 anschließen. USB-C nicht gleichzeitig zur 3V3-Einspeisung verwenden.</text>
+  <text x="65" y="1059" class="small">Vor dem Aufbau Boardrevision und Pinbelegung prüfen; Modulanschlüsse und Solar-Laderegler müssen zu Akku und Panel passen.</text>
+</svg>

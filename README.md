@@ -43,7 +43,7 @@ Die Firmware verwaltet 32 Zeitplanplätze, also höchstens 16 verschiedene Absen
 ## LEDs und Kontrolle
 
 - **GPIO 35 (`PIN_LED`):** Status-LED für das Senden weitergeleiteter Pakete. Bei einem fatalen Funkfehler zeigt der serielle Monitor `FATAL`, Vorgang und Fehlercode; die Firmware startet automatisch neu, statt dauerhaft in einer Fehlerschleife zu bleiben.
-- **GPIO 4 (`PIN_AWAKE_LED`):** externe LED leuchtet, solange der ESP32 wach ist, und ist während Light-Sleep aus. Vorwiderstand in Reihe verwenden; Schaltskizze siehe unten.
+- **GPIO 4 (`PIN_AWAKE_LED`):** externe LED leuchtet, solange der ESP32 wach ist, und ist während Light-Sleep aus. Vorwiderstand in Reihe verwenden; siehe Gesamt-Verdrahtungsplan.
   Die Ausgangskonfiguration bleibt im Light-Sleep erhalten, ohne GPIO4 auf AUS zu verriegeln. Nach dem Aufwecken über GPIO7 wird die Wach-LED sofort wieder eingeschaltet. Während GPIO7 an GND liegt, hat das Dauerleuchten Vorrang vor einer noch laufenden Start-Blinkanzeige; GPIO6 kann die LEDs weiterhin abschalten.
 - **GPIO 5 (`PIN_TX_LED`):** zusätzliche externe Sende-LED leuchtet während jedes Sendeversuchs und erlischt danach auch bei einem Sendefehler. Die interne LED an GPIO 35 bleibt unverändert; die externe Sende-LED zeigt keine fatalen Fehler an.
 - **GPIO 6 (`PIN_LED_INHIBIT`):** freier Eingang mit internem Pull-up. Wird GPIO 6 mit GND verbunden, bleiben beide externen LEDs aus. Die interne Status-LED an GPIO 35 bleibt davon unberührt.
@@ -54,70 +54,29 @@ Der serielle Monitor läuft mit **115200 Baud**. Im normalen Betrieb werden Stat
 
 Bei einem Neustart mit nachweislich leerem Stationsspeicher blinken beide externen LEDs (GPIO 4 und GPIO 5) **vier Sekunden lang gemeinsam**, jeweils 250 ms an und 250 ms aus. Empfang und Hauptschleife laufen währenddessen weiter; eine viersekündige blockierende Wartezeit gibt es nicht. Danach gelten wieder die normalen LED-Funktionen. GPIO 6 an GND unterdrückt weiterhin beide LEDs, auch diese Startanzeige. Ein nicht löschbarer Speicher wird nicht fälschlich als leer signalisiert. Der Watchdog wird bereits vor dem Löschversuch aktiviert und während des Wartens auf das Loslassen regelmäßig bedient.
 
-### Externe Sende-LED anschließen
+### Externe LEDs und Schalter anschließen
 
 Eine normale rote oder gelbe LED mit **470-Ohm-Vorwiderstand** anschließen:
 
-```text
-Board GPIO 5 ----[ 470 Ohm ]---- Anode (+) LED Kathode (-) ---- Board GND
-```
-
-Die Anode ist normalerweise das längere Bein; die Kathode das kürzere Bein an der abgeflachten Gehäuseseite. Nicht ohne Vorwiderstand anschließen. **GPIO 5 ist nicht der 5-V-Anschluss.** Die bestehende Wach-LED an GPIO 4 bleibt angeschlossen. Nach dem Flashen leuchtet die neue LED nur während des blockierenden Sendeaufrufs; auch ein fehlgeschlagener Sendeversuch wird angezeigt.
+Die Anode ist normalerweise das längere Bein; die Kathode das kürzere Bein an der abgeflachten Gehäuseseite. Nicht ohne Vorwiderstand anschließen. **GPIO 5 ist nicht der 5-V-Anschluss.** Nach dem Flashen leuchtet die Sende-LED nur während des blockierenden Sendeaufrufs; auch ein fehlgeschlagener Sendeversuch wird angezeigt.
 
 ### Beide externen LEDs mit GND abschalten
 
 GPIO 6 dient als Schalteingang. Ein Schalter oder Jumper zwischen GPIO 6 und GND schaltet die externe Wach-LED (GPIO 4) und die externe Sende-LED (GPIO 5) aus. Im offenen Zustand zieht der interne Pull-up den Eingang auf HIGH und die normale LED-Steuerung bleibt aktiv. Für diesen Schalteingang ist kein zusätzlicher Widerstand nötig.
 
-```text
-GPIO 4 ──[ 1 kΩ ]──|>|── GND     Wach-LED
-GPIO 5 ──[470 Ω ]──|>|── GND     Sende-LED
-
-GPIO 6 ──────o/ o────── GND      Schalter/Jumper
-             offen = LEDs normal
-             geschlossen = beide externen LEDs aus
-
-GPIO 7 ──────o/ o────── GND      Reset-Taster/Jumper
-             geschlossen = einmaliger Neustart
-```
-
 Für GPIO 6 und GPIO 7 sind keine zusätzlichen Widerstände nötig. Der Reset-Eingang weckt das Board auch aus dem Light-Sleep. Bei verbundenem GND bleibt die Wach-LED an und die Firmware wartet ohne Zeitlimit auf das Loslassen; der Watchdog wird dabei weiter bedient. Erst danach startet das Board neu und zeigt bei leerem Speicher das viersekündige Blinksignal. Während dieser Anzeige bleibt der ESP32 wach. GPIO 35 (interne Status-LED) wird durch den GPIO-6-Schalter nicht beeinflusst.
+
+## Gesamt-Verdrahtungsplan
+
+Die folgende Übersicht fasst Versorgung, Akku-Messung, LEDs und Schalter in einem Plan zusammen. Die genaue Position und Beschriftung der Anschlüsse kann je nach Board- und Modulrevision abweichen.
+
+Wichtig: Das Solarpanel nur an einen passenden Solar-Laderegler anschließen. Akku-Plus niemals direkt mit GPIO 2 verbinden; vor Einspeisung in 3V3 die Spannung messen.
+
+![Gesamt-Verdrahtungsplan für Solar-Laderegler, Akku, Heltec-Board, LEDs und Schalter](docs/wiring-plan.svg)
 
 ## Solar-, Akku- und 3,3-V-Versorgung
 
-Die Skizze zeigt den vorgesehenen Aufbau. Die Panelspannung muss über einen **für Solarpanels und eine einzelne Li-Ion-/LiPo-Zelle geeigneten Solar-Laderegler** zur Batterie geführt werden. Ein einfacher TC4056/TP4056-Lader ist normalerweise kein Solarregler und hat meist keine Lastaufteilung (Power-Path). Das Solarpanel deshalb **nicht direkt** an den Akku, den 3V3-Pin oder ungeregelt an den Eingang eines einfachen TC4056-Moduls anschließen. Falls ein TC4056-Modul verwendet wird, muss dessen Eingang innerhalb der Datenblattgrenzen stabil und strombegrenzt versorgt werden; für gleichzeitiges Laden und Betreiben ist ein Lader mit Power-Path vorzuziehen.
-
-```text
- Solarpanel PV+ / PV-
-          │
-          ▼
-┌─────────────────────────────────────┐
-│ Solar-Laderegler für 1S Li-Ion/LiPo  │  Solar-Eingang mit passender
-│ Eingangsstrombegrenzung, Power-Path  │  Begrenzung/Ladeschlussspannung
-└──────┬────────┬──────────┬──────────┘
-       │ BAT+   │ BAT-     │ LOAD+/OUT+ ── Wandler IN+
-       │        │          └ LOAD-/OUT- ── Wandler IN- ──┐
-       │        │                                         │
-       │     Akku-/GND ───────────────────────────────────┤ gemeinsame Masse
-       │                                                  │
-       ▼                                                  ▼
-  1S-Akku mit                                  ┌─────────────────────┐
-  Schutzschaltung                              │ 3,3-V-Buck-Boost-   │
-       │                                       │ Wandler             │
-       │                                       └──────┬────────┬────┘
-       │                                          OUT+ │        │ OUT-
-       │                                               ▼        └── Board GND
-       │                                          Board 3V3
-       │
-       └── B+/BAT+ ── R1 470 kΩ ──┬── GPIO 2 (ADC)
-                                  ├── R2 100 kΩ ── GND
-                                  └── C1 100 nF ─── GND
-
- Board GPIO 4 ── R3 1 kΩ ──|>|── Board-GND
-                            Wach-LED
-
- Board GPIO 5 ── R4 470 Ω ──|>|── Board-GND
-                             Sende-LED
-```
+Der dargestellte Aufbau verwendet einen **für Solarpanels und eine einzelne Li-Ion-/LiPo-Zelle geeigneten Solar-Laderegler**. Ein einfacher TC4056/TP4056-Lader ist normalerweise kein Solarregler und hat meist keine Lastaufteilung (Power-Path). Das Solarpanel deshalb **nicht direkt** an den Akku, den 3V3-Pin oder ungeregelt an den Eingang eines einfachen TC4056-Moduls anschließen. Falls ein TC4056-Modul verwendet wird, muss dessen Eingang innerhalb der Datenblattgrenzen stabil und strombegrenzt versorgt werden; für gleichzeitiges Laden und Betreiben ist ein Lader mit Power-Path vorzuziehen.
 
 **Anschlüsse und Bauteile**
 
@@ -125,7 +84,7 @@ Die Skizze zeigt den vorgesehenen Aufbau. Die Panelspannung muss über einen **f
 - Ladegerät, Wandler, Board und Teiler brauchen eine gemeinsame Masse. Bei Einspeisung in 3V3 den USB-C-Anschluss nicht gleichzeitig verwenden, außer die konkrete Boardrevision erlaubt diese Versorgung ausdrücklich.
 - Für GPIO 2 liegt **R1 = 470 kΩ** zwischen Akku-Plus und GPIO 2; **R2 = 100 kΩ** liegt von GPIO 2 nach GND. **C1 = 100 nF keramisch** liegt parallel zu R2, möglichst nahe am GPIO. Akku-Plus niemals direkt an GPIO 2 anschließen. Die Messleitung kommt an die Akku-/Zellspannung, nicht an den 3,3-V-Wandlerausgang.
 - Der Sketch rechnet mit einem Teilerfaktor von **5,7**. Mit den genannten Widerständen ergeben 4,2 V am Akku ungefähr 0,74 V am ADC. Bauteiltoleranzen und ADC-Abweichungen können die Anzeige beeinflussen; Akkuanzeige mit einem Multimeter gegenprüfen.
-- GPIO 4 steuert die externe Wach-LED: Anode über **1 kΩ** an GPIO 4, Kathode an GND. GPIO 5 steuert die zusätzliche Sende-LED: Anode über **470 Ω** an GPIO 5, Kathode an GND. Beide Vorwiderstände sind erforderlich. GPIO 35 bleibt die interne Sende-/Fehler-LED.
+- GPIO 4 steuert die externe Wach-LED über **1 kΩ**, GPIO 5 die zusätzliche Sende-LED über **470 Ω**; beide Vorwiderstände sind erforderlich. GPIO 35 bleibt die interne Sende-/Fehler-LED.
 
 Die Firmware misst die Akkuspannung beim Start und anschließend etwa jede Minute. Bei **3,3 V oder weniger** speichert sie den Unterspannungszustand und wechselt in Deep-Sleep. Im Schutzmodus wacht sie alle **60 Minuten** kurz zur Messung auf; erst oberhalb von **3,6 V** startet sie wieder. Diese Softwareabschaltung ersetzt weder eine Akku-Schutzschaltung noch einen geeigneten Ladecontroller. Deep-Sleep schaltet den externen Wandler nicht ab; dessen Ruhestrom bleibt Teil des Verbrauchs.
 
