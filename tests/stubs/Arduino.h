@@ -27,6 +27,9 @@ constexpr int GPIO_INTR_HIGH_LEVEL = 6;
 namespace Mock {
 inline uint32_t now = 0;
 inline int pins[40] = {};
+inline bool heldPins[40] = {};
+inline bool sleepSelected[40] = {};
+inline esp_err_t ledSleepConfigResult = ESP_OK;
 inline bool radioWakeup = false;
 inline bool gpioWakeup = false;
 inline int gpioWakeupPin = -1;
@@ -51,7 +54,9 @@ inline void delay(uint32_t duration) {
   if (Mock::onDelay != nullptr) Mock::onDelay();
 }
 inline void pinMode(int, int) {}
-inline void digitalWrite(int pin, int value) { Mock::pins[pin] = value; }
+inline void digitalWrite(int pin, int value) {
+  if (!Mock::heldPins[pin]) Mock::pins[pin] = value;
+}
 inline int digitalRead(int pin) { return Mock::pins[pin]; }
 inline void analogReadResolution(int) {}
 inline void analogSetPinAttenuation(int, int) {}
@@ -131,7 +136,17 @@ inline esp_err_t esp_light_sleep_start() {
   }
   return Mock::sleepResult;
 }
-inline esp_err_t gpio_hold_en(gpio_num_t) { return ESP_OK; }
-inline esp_err_t gpio_hold_dis(gpio_num_t) { return ESP_OK; }
+inline esp_err_t gpio_sleep_sel_dis(gpio_num_t pin) {
+  if (Mock::ledSleepConfigResult == ESP_OK) Mock::sleepSelected[pin] = false;
+  return Mock::ledSleepConfigResult;
+}
+inline esp_err_t gpio_hold_en(gpio_num_t pin) {
+  Mock::heldPins[pin] = true;
+  return ESP_OK;
+}
+inline esp_err_t gpio_hold_dis(gpio_num_t pin) {
+  Mock::heldPins[pin] = false;
+  return ESP_OK;
+}
 inline esp_err_t rtc_gpio_hold_dis(gpio_num_t) { return ESP_OK; }
 inline esp_err_t rtc_gpio_deinit(gpio_num_t) { return ESP_OK; }
