@@ -11,6 +11,7 @@ inline bool batteryLock = false;
 inline bool batteryStorageAvailable = true;
 inline bool cadenceStorageAvailable = true;
 inline unsigned removeCalls = 0;
+inline bool removeSucceeds = true;
 }
 
 class Preferences {
@@ -40,6 +41,7 @@ class Preferences {
   }
   bool remove(const char*) {
     ++MockPreferences::removeCalls;
+    if (!MockPreferences::removeSucceeds) return false;
     MockPreferences::bytes.clear();
     return true;
   }

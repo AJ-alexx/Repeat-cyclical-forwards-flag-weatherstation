@@ -22,6 +22,7 @@ constexpr esp_err_t ESP_ERR_SLEEP_REJECT = 3;
 constexpr esp_err_t ESP_ERR_SLEEP_TOO_SHORT_SLEEP_DURATION = 4;
 constexpr int ESP_EXT1_WAKEUP_ANY_HIGH = 1;
 constexpr int GPIO_INTR_LOW_LEVEL = 5;
+constexpr int GPIO_INTR_HIGH_LEVEL = 6;
 
 namespace Mock {
 inline uint32_t now = 0;
@@ -29,6 +30,7 @@ inline int pins[40] = {};
 inline bool radioWakeup = false;
 inline bool gpioWakeup = false;
 inline int gpioWakeupPin = -1;
+inline int gpioWakeupLevel = -1;
 inline uint64_t sleepDurationUs = 0;
 inline uint32_t batteryAdcMillivolts = 684;
 inline unsigned sleepCalls = 0;
@@ -92,8 +94,9 @@ inline esp_err_t esp_sleep_enable_ext1_wakeup_io(uint64_t, int) {
   Mock::radioWakeup = true;
   return ESP_OK;
 }
-inline esp_err_t gpio_wakeup_enable(gpio_num_t pin, int) {
+inline esp_err_t gpio_wakeup_enable(gpio_num_t pin, int level) {
   Mock::gpioWakeupPin = pin;
+  Mock::gpioWakeupLevel = level;
   return ESP_OK;
 }
 inline esp_err_t esp_sleep_enable_gpio_wakeup() {
