@@ -520,7 +520,8 @@ void testExternalResetContinuesIfStationStorageCannotBeOpened() {
 
   assert(Mock::restarts == 1);
   assert(MockPreferences::bytes.size() == 3);
-  assert(Mock::log.find("restarting despite storage error") != std::string::npos);
+  assert(Mock::log.find("Stored station schedules retained") != std::string::npos);
+  assert(Mock::log.find("ERROR:") == std::string::npos);
   rebootFirmware();
   assert(Mock::restarts == 1);
   assert(radio.listening);
@@ -546,23 +547,28 @@ void testExternalResetContinuesIfRemovalFails() {
   assert(MockPreferences::removeCalls == 1);
   rebootFirmware();
   assert(Mock::restarts == 1);
-  assert(MockPreferences::removeCalls == 2);
+  assert(MockPreferences::removeCalls == 1);
   assert(MockPreferences::bytes.size() == sizeof(image));
   assert(radio.listening);
-  assert(receiveSchedule.trackedCount() == 0);
-  assert(!scheduleStorageReady);
+  assert(receiveSchedule.trackedCount() == 2);
+  assert(!receiveSchedule.complete());
+  assert(controlActive);
+  assert(scheduleStorageReady);
+  assert(Mock::log.find("Restart control:") != std::string::npos);
+  assert(Mock::log.find("ERROR:") == std::string::npos);
   assert(!emptyStartBlinkActive);
   for (unsigned i = 0; i < 100; ++i) loop();
-  assert(MockPreferences::removeCalls == 2);
+  assert(MockPreferences::removeCalls == 1);
   assert(Mock::restarts == 1);
   rebootFirmware();
   assert(Mock::restarts == 1);
-  assert(receiveSchedule.trackedCount() == 0);
-  assert(!scheduleStorageReady);
+  assert(receiveSchedule.trackedCount() == 2);
+  assert(controlActive);
+  assert(scheduleStorageReady);
   assert(!emptyStartBlinkActive);
 }
 
-void testExternalResetRetriesClearingAtBoot() {
+void testExternalResetDoesNotRetryClearingAtBoot() {
   resetFirmware();
   MockPreferences::bytes = {1, 2, 3};
   MockPreferences::removeSucceeds = false;
@@ -572,10 +578,24 @@ void testExternalResetRetriesClearingAtBoot() {
   MockPreferences::removeSucceeds = true;
   rebootFirmware();
   assert(Mock::restarts == 1);
-  assert(MockPreferences::removeCalls == 2);
-  assert(MockPreferences::bytes.empty());
+  assert(MockPreferences::removeCalls == 1);
+  assert(MockPreferences::bytes.size() == 3);
   assert(scheduleStorageReady);
-  assert(emptyStartBlinkActive);
+  assert(!emptyStartBlinkActive);
+  assert(radio.listening);
+}
+
+void testFailedClearingDoesNotBlinkEvenIfStorageIsEmptyAtBoot() {
+  resetFirmware();
+  MockPreferences::cadenceStorageAvailable = false;
+  Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  setup();
+  assert(Mock::restarts == 1);
+  MockPreferences::cadenceStorageAvailable = true;
+  rebootFirmware();
+  assert(MockPreferences::bytes.empty());
+  assert(!emptyStartBlinkActive);
+  assert(scheduleStorageReady);
   assert(radio.listening);
 }
 
@@ -682,7 +702,8 @@ int main() {
   testExternalResetTriggersOnceUntilReleased();
   testExternalResetContinuesIfStationStorageCannotBeOpened();
   testExternalResetContinuesIfRemovalFails();
-  testExternalResetRetriesClearingAtBoot();
+  testExternalResetDoesNotRetryClearingAtBoot();
+  testFailedClearingDoesNotBlinkEvenIfStorageIsEmptyAtBoot();
   testEmptyStartupBlinksWithoutBlocking();
   testStoredStartupDoesNotBlink();
   testFatalErrorRestartsWithoutWaitingForever();
