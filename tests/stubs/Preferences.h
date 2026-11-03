@@ -9,14 +9,22 @@ namespace MockPreferences {
 inline std::vector<uint8_t> bytes;
 inline bool batteryLock = false;
 inline bool batteryStorageAvailable = true;
+inline bool cadenceStorageAvailable = true;
+inline unsigned removeCalls = 0;
 }
 
 class Preferences {
  public:
   bool begin(const char* name, bool) {
-    return strcmp(name, "battery") != 0 ||
-           MockPreferences::batteryStorageAvailable;
+    if (strcmp(name, "battery") == 0) {
+      return MockPreferences::batteryStorageAvailable;
+    }
+    if (strcmp(name, "fanet-cadence") == 0) {
+      return MockPreferences::cadenceStorageAvailable;
+    }
+    return true;
   }
+  void end() {}
   size_t getBytesLength(const char*) const {
     return MockPreferences::bytes.size();
   }
@@ -29,6 +37,11 @@ class Preferences {
     const uint8_t* bytes = static_cast<const uint8_t*>(source);
     MockPreferences::bytes.assign(bytes, bytes + length);
     return length;
+  }
+  bool remove(const char*) {
+    ++MockPreferences::removeCalls;
+    MockPreferences::bytes.clear();
+    return true;
   }
   bool getBool(const char*, bool defaultValue) const {
     return MockPreferences::batteryLock ? true : defaultValue;
