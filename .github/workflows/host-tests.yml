@@ -1,0 +1,26 @@
+name: Firmware host tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Compile host tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror \
+            -DARDUINO_ARCH_ESP32 \
+            -DCONFIG_IDF_TARGET_ESP32S3 \
+            -Itests/stubs tests/firmware_test.cpp \
+            -o /tmp/fanet-firmware-test
+
+      - name: Run host tests
+        run: /tmp/fanet-firmware-test
