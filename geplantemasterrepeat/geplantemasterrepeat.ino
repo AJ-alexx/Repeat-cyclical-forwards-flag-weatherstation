@@ -775,6 +775,8 @@ bool batteryStorageReady = false;
 RTC_NOINIT_ATTR uint32_t externalResetLatch;
 constexpr uint32_t EXTERNAL_RESET_LATCH_MAGIC = 0x52535437;
 
+bool clearPersistentSchedule();
+
 bool checkExternalResetInput() {
   if (digitalRead(PIN_EXTERNAL_RESET) != LOW) {
     externalResetLatch = 0;
@@ -783,6 +785,9 @@ bool checkExternalResetInput() {
   if (externalResetLatch == EXTERNAL_RESET_LATCH_MAGIC) return false;
 
   externalResetLatch = EXTERNAL_RESET_LATCH_MAGIC;
+  Serial.println("GPIO 7 grounded; clearing stored station schedules.");
+  if (!clearPersistentSchedule()) return false;
+
   Serial.println("External reset requested on GPIO 7.");
   Serial.flush();
   delay(50);
@@ -1024,6 +1029,28 @@ void persistScheduleIfNeeded() {
   receiveSchedule.markPersisted();
 }
 }  // namespace
+
+bool clearPersistentSchedule() {
+  Preferences resetPreferences;
+  if (!resetPreferences.begin("fanet-cadence", false)) {
+    Serial.println("ERROR: could not open persistent cadence storage; reset cancelled.");
+    return false;
+  }
+
+  const size_t storedSize =
+      resetPreferences.getBytesLength(SCHEDULE_STORAGE_KEY);
+  if (storedSize > 0 &&
+      (!resetPreferences.remove(SCHEDULE_STORAGE_KEY) ||
+       resetPreferences.getBytesLength(SCHEDULE_STORAGE_KEY) != 0)) {
+    resetPreferences.end();
+    Serial.println("ERROR: could not clear stored station schedules; reset cancelled.");
+    return false;
+  }
+
+  resetPreferences.end();
+  Serial.println("Stored station schedules cleared.");
+  return true;
+}
 
 void ARDUINO_ISR_ATTR onPacketReceived() {
   receivedFlag = true;

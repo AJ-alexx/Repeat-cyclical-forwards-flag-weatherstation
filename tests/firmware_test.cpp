@@ -21,6 +21,8 @@ void resetFirmware() {
   Mock::log.clear();
   MockPreferences::batteryLock = false;
   MockPreferences::batteryStorageAvailable = true;
+  MockPreferences::cadenceStorageAvailable = true;
+  MockPreferences::removeCalls = 0;
   radio.rxCalls = radio.txCalls = radio.readCalls = 0;
   radio.asleep = radio.listening = false;
   radio.callback = nullptr;
@@ -438,22 +440,42 @@ void testGroundedInputDisablesBothExternalLeds() {
 
 void testExternalResetTriggersOnceUntilReleased() {
   resetFirmware();
+  MockPreferences::bytes = {1, 2, 3};
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
   setup();
   assert(Mock::restarts == 1);
+  assert(MockPreferences::bytes.empty());
+  assert(MockPreferences::removeCalls == 1);
   assert(radio.rxCalls == 0);
 
   setup();
   assert(Mock::restarts == 1);
+  assert(MockPreferences::removeCalls == 1);
   assert(radio.listening);
   loop();
   assert(Mock::restarts == 1);
 
   Mock::pins[PIN_EXTERNAL_RESET] = HIGH;
   loop();
+  MockPreferences::bytes = {4, 5, 6};
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
   loop();
   assert(Mock::restarts == 2);
+  assert(MockPreferences::bytes.empty());
+  assert(MockPreferences::removeCalls == 2);
+}
+
+void testExternalResetIsCancelledIfStationStorageCannotBeCleared() {
+  resetFirmware();
+  MockPreferences::bytes = {1, 2, 3};
+  MockPreferences::cadenceStorageAvailable = false;
+  Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+
+  setup();
+
+  assert(Mock::restarts == 0);
+  assert(MockPreferences::bytes.size() == 3);
+  assert(Mock::log.find("reset cancelled") != std::string::npos);
 }
 
 void testExternalResetWakesFromLightSleep() {
@@ -513,6 +535,7 @@ int main() {
   testStartupAndRelay();
   testGroundedInputDisablesBothExternalLeds();
   testExternalResetTriggersOnceUntilReleased();
+  testExternalResetIsCancelledIfStationStorageCannotBeCleared();
   testExternalResetWakesFromLightSleep();
   testTxLedTurnsOffAfterTransmitError();
   testSleepFailureDisablesSleep();
