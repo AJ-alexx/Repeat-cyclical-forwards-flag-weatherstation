@@ -79,7 +79,7 @@ GPIO 7 ──────o/ o────── GND      Reset-Taster/Jumper
              geschlossen = einmaliger Neustart
 ```
 
-Für GPIO 6 und GPIO 7 sind keine zusätzlichen Widerstände nötig. Der Reset-Eingang weckt das Board auch aus dem Light-Sleep. Bei gehaltenem GND wird stattdessen auf das Loslassen geweckt, damit der aktive LOW-Pegel nicht jeden Schlafversuch sofort unterbricht. Während der viersekündigen Startanzeige bleibt der ESP32 wach. GPIO 35 (interne Status-LED) wird durch den GPIO-6-Schalter nicht beeinflusst.
+Für GPIO 6 und GPIO 7 sind keine zusätzlichen Widerstände nötig. Der Reset-Eingang weckt das Board auch aus dem Light-Sleep. Bei gehaltenem GND wird stattdessen auf das Loslassen geweckt, damit der aktive LOW-Pegel nicht jeden Schlafversuch sofort unterbricht. Die GPIO7-Weckquelle wird nur unmittelbar für den Schlaf aktiviert und nach dem Aufwachen sowie vor einem GPIO7-Neustart abgeschaltet; beim Start und während der viersekündigen Blinkanzeige bleibt sie aus. GND darf während des gesamten Neustarts und Blinkens verbunden bleiben. Während der Startanzeige bleibt der ESP32 wach. GPIO 35 (interne Status-LED) wird durch den GPIO-6-Schalter nicht beeinflusst.
 
 ## Solar-, Akku- und 3,3-V-Versorgung
 

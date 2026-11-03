@@ -793,6 +793,13 @@ bool checkExternalResetInput() {
 
   externalResetLatch = EXTERNAL_RESET_LATCH_MAGIC;
   externalResetStartup = RESET_STARTUP_PENDING;
+  const esp_err_t wakeupDisabled =
+      gpio_wakeup_disable(static_cast<gpio_num_t>(PIN_EXTERNAL_RESET));
+  if (wakeupDisabled != ESP_OK) {
+    Serial.printf("WARNING: reset GPIO wakeup cleanup: %s (%d).\n",
+                  esp_err_to_name(wakeupDisabled),
+                  static_cast<int>(wakeupDisabled));
+  }
   Serial.println("GPIO 7 grounded; clearing stored station schedules.");
   if (clearPersistentSchedule()) {
     externalResetStartup = RESET_STARTUP_CLEARED;
@@ -1311,12 +1318,6 @@ void initLightSleep() {
     disableLightSleep("wakeup setup", error);
     return;
   }
-  const esp_err_t resetPin = gpio_wakeup_enable(
-      static_cast<gpio_num_t>(PIN_EXTERNAL_RESET), GPIO_INTR_LOW_LEVEL);
-  if (resetPin != ESP_OK) {
-    disableLightSleep("reset GPIO wakeup setup", resetPin);
-    return;
-  }
   const esp_err_t resetWakeup = esp_sleep_enable_gpio_wakeup();
   if (resetWakeup != ESP_OK) {
     disableLightSleep("reset GPIO wakeup setup", resetWakeup);
@@ -1329,15 +1330,6 @@ void initLightSleep() {
 void enterLightSleep(uint64_t durationUs) {
   if (!lightSleepReady) return;
   if (emptyStartBlinkActive) return;
-  // A held reset must wake on release, not reject every sleep with LOW.
-  const esp_err_t resetPin = gpio_wakeup_enable(
-      static_cast<gpio_num_t>(PIN_EXTERNAL_RESET),
-      externalResetLatch == EXTERNAL_RESET_LATCH_MAGIC
-          ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL);
-  if (resetPin != ESP_OK) {
-    disableLightSleep("reset GPIO wakeup setup", resetPin);
-    return;
-  }
   Serial.flush();
   const esp_err_t timer = esp_sleep_enable_timer_wakeup(durationUs);
   if (timer != ESP_OK) {
@@ -1346,14 +1338,29 @@ void enterLightSleep(uint64_t durationUs) {
   }
   if (receivedFlag || digitalRead(PIN_DIO1) == HIGH) return;
 
+  // Only arm GPIO7 for sleep, never during boot or the startup indication.
+  const esp_err_t resetPin = gpio_wakeup_enable(
+      static_cast<gpio_num_t>(PIN_EXTERNAL_RESET),
+      externalResetLatch == EXTERNAL_RESET_LATCH_MAGIC
+          ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL);
+  if (resetPin != ESP_OK) {
+    disableLightSleep("reset GPIO wakeup setup", resetPin);
+    return;
+  }
   digitalWrite(PIN_AWAKE_LED, LOW);
   const esp_err_t hold = gpio_hold_en(static_cast<gpio_num_t>(PIN_AWAKE_LED));
+  esp_err_t result = hold;
+  if (hold == ESP_OK) result = esp_light_sleep_start();
+  const esp_err_t resetRelease =
+      gpio_wakeup_disable(static_cast<gpio_num_t>(PIN_EXTERNAL_RESET));
+  if (resetRelease != ESP_OK) {
+    disableLightSleep("reset GPIO wakeup cleanup", resetRelease);
+  }
   if (hold != ESP_OK) {
     setExternalLed(PIN_AWAKE_LED, true);
     disableLightSleep("awake LED hold", hold);
     return;
   }
-  const esp_err_t result = esp_light_sleep_start();
   const esp_err_t ledRelease =
       gpio_hold_dis(static_cast<gpio_num_t>(PIN_AWAKE_LED));
   if (ledRelease != ESP_OK) {
