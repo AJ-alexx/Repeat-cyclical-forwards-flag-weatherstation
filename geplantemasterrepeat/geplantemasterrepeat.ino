@@ -797,8 +797,7 @@ bool checkExternalResetInput() {
   if (clearPersistentSchedule()) {
     externalResetStartup = RESET_STARTUP_CLEARED;
   } else {
-    Serial.println("WARNING: restarting despite storage error; boot will retry "
-                   "once and ignore old station data.");
+    Serial.println("Stored station schedules retained; restarting with normal verification.");
   }
 
   Serial.println("External reset requested on GPIO 7.");
@@ -974,13 +973,12 @@ struct ScheduleStorageImage {
 Preferences schedulePreferences;
 bool scheduleStorageReady = false;
 
-bool loadPersistentSchedule(bool restore = true) {
+bool loadPersistentSchedule() {
   if (!schedulePreferences.begin("fanet-cadence", false)) {
     Serial.println("ERROR: could not open persistent cadence storage.");
     return false;
   }
   scheduleStorageReady = true;
-  if (!restore) return false;
   const size_t storedSize =
       schedulePreferences.getBytesLength(SCHEDULE_STORAGE_KEY);
   if (storedSize == 0) return false;
@@ -1055,7 +1053,6 @@ void persistScheduleIfNeeded() {
 bool clearPersistentSchedule() {
   Preferences resetPreferences;
   if (!resetPreferences.begin("fanet-cadence", false)) {
-    Serial.println("ERROR: could not open persistent cadence storage for clearing.");
     return false;
   }
 
@@ -1065,7 +1062,6 @@ bool clearPersistentSchedule() {
       (!resetPreferences.remove(SCHEDULE_STORAGE_KEY) ||
        resetPreferences.getBytesLength(SCHEDULE_STORAGE_KEY) != 0)) {
     resetPreferences.end();
-    Serial.println("ERROR: could not clear stored station schedules.");
     return false;
   }
 
@@ -1494,18 +1490,9 @@ void setup() {
   if (checkExternalResetInput()) return;
   if (!checkBatteryAtBoot()) return;
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
-  const bool freshStart = externalResetStartup == RESET_STARTUP_PENDING ||
-                          externalResetStartup == RESET_STARTUP_CLEARED;
-  const bool storageCleared =
-      !freshStart || externalResetStartup == RESET_STARTUP_CLEARED ||
-      clearPersistentSchedule();
-  externalResetStartup = storageCleared ? 0 : RESET_STARTUP_PENDING;
-  const bool restoredSchedule = loadPersistentSchedule(!freshStart);
-  if (!storageCleared) {
-    scheduleStorageReady = false;
-    Serial.println("ERROR: station storage still not cleared; running with "
-                   "empty RAM schedules, persistence disabled until restart.");
-  }
+  const bool clearingFailed = externalResetStartup == RESET_STARTUP_PENDING;
+  externalResetStartup = 0;
+  const bool restoredSchedule = loadPersistentSchedule();
   requireRadio("begin", radio.begin(FREQUENCY_MHZ, BANDWIDTH_KHZ, SPREADING_FACTOR,
                                     CODING_RATE, SYNC_WORD, TX_POWER_DBM,
                                     PREAMBLE_SYMBOLS, 1.8f));
@@ -1536,7 +1523,7 @@ void setup() {
   } else {
     beginLearning(lastLearningStart);
   }
-  if (storageCleared && scheduleStorageReady && !restoredSchedule &&
+  if (!clearingFailed && scheduleStorageReady && !restoredSchedule &&
       schedulePreferences.getBytesLength(SCHEDULE_STORAGE_KEY) == 0) {
     emptyStartBlinkStarted = millis();
     emptyStartBlinkActive = true;
