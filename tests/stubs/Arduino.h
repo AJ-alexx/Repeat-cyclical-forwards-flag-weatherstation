@@ -31,6 +31,9 @@ inline bool radioWakeup = false;
 inline bool gpioWakeup = false;
 inline int gpioWakeupPin = -1;
 inline int gpioWakeupLevel = -1;
+inline bool gpioWakeupArmed = false;
+inline unsigned activeLevelWakeupSetups = 0;
+inline void (*onSleep)() = nullptr;
 inline uint64_t sleepDurationUs = 0;
 inline uint32_t batteryAdcMillivolts = 684;
 inline unsigned sleepCalls = 0;
@@ -97,6 +100,14 @@ inline esp_err_t esp_sleep_enable_ext1_wakeup_io(uint64_t, int) {
 inline esp_err_t gpio_wakeup_enable(gpio_num_t pin, int level) {
   Mock::gpioWakeupPin = pin;
   Mock::gpioWakeupLevel = level;
+  Mock::gpioWakeupArmed = true;
+  if (digitalRead(pin) == (level == GPIO_INTR_LOW_LEVEL ? LOW : HIGH)) {
+    ++Mock::activeLevelWakeupSetups;
+  }
+  return ESP_OK;
+}
+inline esp_err_t gpio_wakeup_disable(gpio_num_t) {
+  Mock::gpioWakeupArmed = false;
   return ESP_OK;
 }
 inline esp_err_t esp_sleep_enable_gpio_wakeup() {
@@ -110,6 +121,7 @@ inline esp_err_t esp_sleep_enable_timer_wakeup(uint64_t duration) {
 inline void esp_deep_sleep_start() { ++Mock::deepSleepCalls; }
 inline esp_err_t esp_light_sleep_start() {
   ++Mock::sleepCalls;
+  if (Mock::onSleep != nullptr) Mock::onSleep();
   if (Mock::sleepResult == ESP_OK) {
     Mock::now += static_cast<uint32_t>(Mock::sleepDurationUs / 1000);
   }
