@@ -6,6 +6,9 @@
 void resetFirmware() {
   Mock::now = 0;
   for (int& pin : Mock::pins) pin = LOW;
+  for (bool& held : Mock::heldPins) held = false;
+  for (bool& selected : Mock::sleepSelected) selected = true;
+  Mock::ledSleepConfigResult = ESP_OK;
   Mock::pins[PIN_LED_INHIBIT] = HIGH;
   Mock::pins[PIN_EXTERNAL_RESET] = HIGH;
   Mock::radioWakeup = false;
@@ -689,18 +692,57 @@ void testExternalResetWakesFromLightSleep() {
   assert(!Mock::gpioWakeupArmed);
   finishStartupBlink();
   Mock::onSleep = []() {
+    assert(Mock::pins[PIN_AWAKE_LED] == LOW);
+    assert(!Mock::heldPins[PIN_AWAKE_LED]);
+    assert(!Mock::sleepSelected[PIN_AWAKE_LED]);
     assert(Mock::gpioWakeupArmed);
     assert(Mock::gpioWakeupLevel == GPIO_INTR_LOW_LEVEL);
     Mock::pins[PIN_EXTERNAL_RESET] = LOW;
   };
   enterLightSleep(1000);
   Mock::onSleep = nullptr;
+  assert(Mock::pins[PIN_AWAKE_LED] == HIGH);
   assert(Mock::gpioWakeupPin == PIN_EXTERNAL_RESET);
   assert(!Mock::gpioWakeupArmed);
   scheduleResetRelease(0, 1000);
   loop();
   assert(resetReleaseObserved);
   assert(Mock::restarts == 1);
+  rebootFirmware();
+  assert(emptyStartBlinkActive);
+  const uint32_t started = emptyStartBlinkStarted;
+  for (unsigned i = 0; i < 16; ++i) {
+    Mock::now = started + i * EMPTY_START_BLINK_INTERVAL_MS;
+    loop();
+    assert(Mock::pins[PIN_AWAKE_LED] == (i % 2 == 0 ? HIGH : LOW));
+    assert(Mock::pins[PIN_TX_LED] == Mock::pins[PIN_AWAKE_LED]);
+  }
+}
+
+void testResetDuringStartupBlinkKeepsAwakeLedOn() {
+  resetFirmware();
+  setup();
+  Mock::now = emptyStartBlinkStarted + EMPTY_START_BLINK_INTERVAL_MS;
+  loop();
+  assert(Mock::pins[PIN_AWAKE_LED] == LOW);
+  Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  scheduleResetRelease(0, 1000);
+  loop();
+  assert(resetReleaseObserved);
+  assert(Mock::restarts == 1);
+}
+
+void testLedSleepConfigurationFailureStaysAwake() {
+  resetFirmware();
+  Mock::ledSleepConfigResult = ESP_ERR_INVALID_STATE;
+  setup();
+  assert(!lightSleepReady);
+  finishStartupBlink();
+  enterLightSleep(1000);
+  assert(Mock::sleepCalls == 0);
+  assert(Mock::pins[PIN_AWAKE_LED] == HIGH);
+  assert(Mock::log.find("ERROR: light sleep awake LED sleep configuration") !=
+         std::string::npos);
 }
 
 void testHeldResetWaitsWithWatchdogUntilReleased() {
@@ -784,6 +826,8 @@ int main() {
   testStoredStartupDoesNotBlink();
   testFatalErrorRestartsWithoutWaitingForever();
   testExternalResetWakesFromLightSleep();
+  testResetDuringStartupBlinkKeepsAwakeLedOn();
+  testLedSleepConfigurationFailureStaysAwake();
   testHeldResetWaitsWithWatchdogUntilReleased();
   testTxLedTurnsOffAfterTransmitError();
   testSleepFailureDisablesSleep();

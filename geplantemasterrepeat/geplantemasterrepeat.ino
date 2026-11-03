@@ -784,6 +784,7 @@ uint32_t emptyStartBlinkStarted = 0;
 
 bool clearPersistentSchedule();
 void watchdogSetupFailed(esp_err_t error);
+void setExternalLed(int pin, bool on);
 
 bool checkExternalResetInput() {
   if (digitalRead(PIN_EXTERNAL_RESET) != LOW) {
@@ -792,6 +793,9 @@ bool checkExternalResetInput() {
   }
   if (externalResetLatch == EXTERNAL_RESET_LATCH_MAGIC) return false;
 
+  emptyStartBlinkActive = false;
+  setExternalLed(PIN_AWAKE_LED, true);
+  setExternalLed(PIN_TX_LED, false);
   externalResetLatch = EXTERNAL_RESET_LATCH_MAGIC;
   externalResetStartup = RESET_STARTUP_PENDING;
   const esp_err_t wakeupDisabled =
@@ -1322,6 +1326,13 @@ void disableLightSleep(const char* operation, esp_err_t error) {
 }
 
 void initLightSleep() {
+  // Keep the output configuration during sleep without latching the LED off.
+  const esp_err_t ledSleep =
+      gpio_sleep_sel_dis(static_cast<gpio_num_t>(PIN_AWAKE_LED));
+  if (ledSleep != ESP_OK) {
+    disableLightSleep("awake LED sleep configuration", ledSleep);
+    return;
+  }
   // Separate RTC wakeup preserves RadioLib's rising-edge GPIO interrupt.
   const esp_err_t error = esp_sleep_enable_ext1_wakeup_io(
       1ULL << PIN_DIO1, ESP_EXT1_WAKEUP_ANY_HIGH);
@@ -1359,25 +1370,13 @@ void enterLightSleep(uint64_t durationUs) {
     return;
   }
   digitalWrite(PIN_AWAKE_LED, LOW);
-  const esp_err_t hold = gpio_hold_en(static_cast<gpio_num_t>(PIN_AWAKE_LED));
-  esp_err_t result = hold;
-  if (hold == ESP_OK) result = esp_light_sleep_start();
+  const esp_err_t result = esp_light_sleep_start();
+  setExternalLed(PIN_AWAKE_LED, true);
   const esp_err_t resetRelease =
       gpio_wakeup_disable(static_cast<gpio_num_t>(PIN_EXTERNAL_RESET));
   if (resetRelease != ESP_OK) {
     disableLightSleep("reset GPIO wakeup cleanup", resetRelease);
   }
-  if (hold != ESP_OK) {
-    setExternalLed(PIN_AWAKE_LED, true);
-    disableLightSleep("awake LED hold", hold);
-    return;
-  }
-  const esp_err_t ledRelease =
-      gpio_hold_dis(static_cast<gpio_num_t>(PIN_AWAKE_LED));
-  if (ledRelease != ESP_OK) {
-    disableLightSleep("awake LED hold release", ledRelease);
-  }
-  setExternalLed(PIN_AWAKE_LED, true);
   const esp_err_t release = rtc_gpio_hold_dis(static_cast<gpio_num_t>(PIN_DIO1));
   if (release != ESP_OK) {
     disableLightSleep("DIO1 hold release", release);
