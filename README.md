@@ -46,6 +46,7 @@ Die Firmware verwaltet 32 Zeitplanplätze, also höchstens 16 verschiedene Absen
 - **GPIO 4 (`PIN_AWAKE_LED`):** externe LED leuchtet, solange der ESP32 wach ist, und ist während Light-Sleep aus. Vorwiderstand in Reihe verwenden; Schaltskizze siehe unten.
 - **GPIO 5 (`PIN_TX_LED`):** zusätzliche externe Sende-LED leuchtet während jedes Sendeversuchs und erlischt danach auch bei einem Sendefehler. Die interne LED an GPIO 35 bleibt unverändert; die externe Sende-LED zeigt keine fatalen Fehler an.
 - **GPIO 6 (`PIN_LED_INHIBIT`):** freier Eingang mit internem Pull-up. Wird GPIO 6 mit GND verbunden, bleiben beide externen LEDs aus. Die interne Status-LED an GPIO 35 bleibt davon unberührt.
+- **GPIO 7 (`PIN_EXTERNAL_RESET`):** Reset-Eingang mit internem Pull-up. Wird GPIO 7 mit GND verbunden, startet das Board einmal neu. Bleibt GND anliegen, läuft es danach weiter; erst nach dem Trennen und erneutem Verbinden wird wieder ein Reset ausgelöst.
 - **GPIO 2 (`PIN_BATTERY_ADC`):** ADC-Eingang zur Akkuüberwachung über einen externen Spannungsteiler.
 
 Der serielle Monitor läuft mit **115200 Baud**. Im normalen Betrieb werden Statuszähler ungefähr jede Minute ausgegeben.
@@ -71,9 +72,12 @@ GPIO 5 ──[470 Ω ]──|>|── GND     Sende-LED
 GPIO 6 ──────o/ o────── GND      Schalter/Jumper
              offen = LEDs normal
              geschlossen = beide externen LEDs aus
+
+GPIO 7 ──────o/ o────── GND      Reset-Taster/Jumper
+             geschlossen = einmaliger Neustart
 ```
 
-GPIO 6 ist im Sketch nicht anderweitig belegt; Funk-, Akku- und LED-Pins bleiben unverändert. GPIO 35 (interne Status-LED) wird durch den Schalter nicht beeinflusst.
+Für GPIO 6 und GPIO 7 sind keine zusätzlichen Widerstände nötig. Der Reset-Eingang weckt das Board auch aus dem Light-Sleep. GPIO 35 (interne Status-LED) wird durch den GPIO-6-Schalter nicht beeinflusst.
 
 ## Solar-, Akku- und 3,3-V-Versorgung
 

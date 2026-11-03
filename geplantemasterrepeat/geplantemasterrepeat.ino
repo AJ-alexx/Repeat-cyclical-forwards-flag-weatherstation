@@ -703,6 +703,7 @@ class RecentPackets {
 #include <SPI.h>
 #include <RadioLib.h>
 #include <Preferences.h>
+#include <esp_attr.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 
@@ -742,6 +743,7 @@ constexpr int PIN_LED = 35;
 constexpr int PIN_AWAKE_LED = 4;
 constexpr int PIN_TX_LED = 5;
 constexpr int PIN_LED_INHIBIT = 6;
+constexpr int PIN_EXTERNAL_RESET = 7;
 constexpr int PIN_VEXT = 36;
 constexpr int PIN_BATTERY_ADC = 2;
 
@@ -770,6 +772,23 @@ bool radioInitialized = false;
 bool batteryRecovered = false;
 Preferences batteryPreferences;
 bool batteryStorageReady = false;
+RTC_NOINIT_ATTR uint32_t externalResetLatch;
+constexpr uint32_t EXTERNAL_RESET_LATCH_MAGIC = 0x52535437;
+
+bool checkExternalResetInput() {
+  if (digitalRead(PIN_EXTERNAL_RESET) != LOW) {
+    externalResetLatch = 0;
+    return false;
+  }
+  if (externalResetLatch == EXTERNAL_RESET_LATCH_MAGIC) return false;
+
+  externalResetLatch = EXTERNAL_RESET_LATCH_MAGIC;
+  Serial.println("External reset requested on GPIO 7.");
+  Serial.flush();
+  delay(50);
+  esp_restart();
+  return true;
+}
 
 void setExternalLed(int pin, bool on) {
   digitalWrite(pin, on && digitalRead(PIN_LED_INHIBIT) != LOW ? HIGH : LOW);
@@ -1250,8 +1269,19 @@ void initLightSleep() {
     disableLightSleep("wakeup setup", error);
     return;
   }
+  const esp_err_t resetPin = gpio_wakeup_enable(
+      static_cast<gpio_num_t>(PIN_EXTERNAL_RESET), GPIO_INTR_LOW_LEVEL);
+  if (resetPin != ESP_OK) {
+    disableLightSleep("reset GPIO wakeup setup", resetPin);
+    return;
+  }
+  const esp_err_t resetWakeup = esp_sleep_enable_gpio_wakeup();
+  if (resetWakeup != ESP_OK) {
+    disableLightSleep("reset GPIO wakeup setup", resetWakeup);
+    return;
+  }
   lightSleepReady = true;
-  Serial.println("Light sleep ready: radio wakeup enabled.");
+  Serial.println("Light sleep ready: radio and reset GPIO wakeup enabled.");
 }
 
 void enterLightSleep(uint64_t durationUs) {
@@ -1388,6 +1418,7 @@ void idleLightSleep() {
 
 void setup() {
   pinMode(PIN_LED_INHIBIT, INPUT_PULLUP);
+  pinMode(PIN_EXTERNAL_RESET, INPUT_PULLUP);
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, LOW);
   pinMode(PIN_TX_LED, OUTPUT);
@@ -1402,6 +1433,8 @@ void setup() {
   Serial.println("External LED GPIO 4: ON = ESP32 awake, OFF = light sleep.");
   Serial.println("External TX LED GPIO 5: ON = transmitting, OFF = idle.");
   Serial.println("Ground GPIO 6 to disable both external LEDs.");
+  Serial.println("Ground GPIO 7 to reset the board once until released.");
+  if (checkExternalResetInput()) return;
   if (!checkBatteryAtBoot()) return;
   initializeWatchdog();
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
@@ -1439,6 +1472,7 @@ void setup() {
 }
 
 void loop() {
+  if (checkExternalResetInput()) return;
   if (batterySleepMode) {
     delay(1000);
     return;
