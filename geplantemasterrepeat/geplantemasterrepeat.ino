@@ -783,6 +783,7 @@ bool emptyStartBlinkActive = false;
 uint32_t emptyStartBlinkStarted = 0;
 
 bool clearPersistentSchedule();
+void watchdogSetupFailed(esp_err_t error);
 
 bool checkExternalResetInput() {
   if (digitalRead(PIN_EXTERNAL_RESET) != LOW) {
@@ -807,6 +808,16 @@ bool checkExternalResetInput() {
     Serial.println("Stored station schedules retained; restarting with normal verification.");
   }
 
+  Serial.println("GPIO 7 held low; waiting for release before restarting.");
+  while (digitalRead(PIN_EXTERNAL_RESET) == LOW) {
+    delay(50);
+    const esp_err_t watchdog = esp_task_wdt_reset();
+    if (watchdog != ESP_OK) {
+      watchdogSetupFailed(watchdog);
+      return true;
+    }
+  }
+  Serial.println("GPIO 7 released; restarting.");
   Serial.println("External reset requested on GPIO 7.");
   Serial.flush();
   delay(50);
