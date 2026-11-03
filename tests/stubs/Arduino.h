@@ -34,6 +34,7 @@ inline int gpioWakeupLevel = -1;
 inline bool gpioWakeupArmed = false;
 inline unsigned activeLevelWakeupSetups = 0;
 inline void (*onSleep)() = nullptr;
+inline void (*onDelay)() = nullptr;
 inline uint64_t sleepDurationUs = 0;
 inline uint32_t batteryAdcMillivolts = 684;
 inline unsigned sleepCalls = 0;
@@ -45,7 +46,10 @@ inline std::string log;
 }
 
 inline uint32_t millis() { return Mock::now; }
-inline void delay(uint32_t duration) { Mock::now += duration; }
+inline void delay(uint32_t duration) {
+  Mock::now += duration;
+  if (Mock::onDelay != nullptr) Mock::onDelay();
+}
 inline void pinMode(int, int) {}
 inline void digitalWrite(int pin, int value) { Mock::pins[pin] = value; }
 inline int digitalRead(int pin) { return Mock::pins[pin]; }

@@ -15,6 +15,7 @@ void resetFirmware() {
   Mock::gpioWakeupArmed = false;
   Mock::activeLevelWakeupSetups = 0;
   Mock::onSleep = nullptr;
+  Mock::onDelay = nullptr;
   Mock::sleepDurationUs = 0;
   Mock::batteryAdcMillivolts = 684;
   Mock::sleepCalls = 0;
@@ -63,6 +64,7 @@ void rebootFirmware() {
   const bool removeSucceeds = MockPreferences::removeSucceeds;
   const unsigned removes = MockPreferences::removeCalls;
   const unsigned restarts = Mock::restarts;
+  void (*onDelay)() = Mock::onDelay;
   resetFirmware();
   externalResetLatch = latch;
   externalResetStartup = startup;
@@ -72,7 +74,30 @@ void rebootFirmware() {
   MockPreferences::removeSucceeds = removeSucceeds;
   MockPreferences::removeCalls = removes;
   Mock::restarts = restarts;
+  Mock::onDelay = onDelay;
   setup();
+}
+
+uint32_t resetReleaseAt = 0;
+bool resetReleaseObserved = false;
+unsigned resetRxCallsAtWait = 0;
+
+void releaseResetAfterLongHold() {
+  if (Mock::pins[PIN_EXTERNAL_RESET] != LOW || Mock::now < resetReleaseAt) return;
+  assert(Mock::watchdogCalls > 1);
+  assert(radio.rxCalls == resetRxCallsAtWait);
+  assert(!emptyStartBlinkActive);
+  assert(Mock::pins[PIN_AWAKE_LED] == HIGH);
+  assert(Mock::pins[PIN_TX_LED] == LOW);
+  Mock::pins[PIN_EXTERNAL_RESET] = HIGH;
+  resetReleaseObserved = true;
+}
+
+void scheduleResetRelease(uint32_t delayBeforeInput, uint32_t holdDuration) {
+  resetReleaseAt = Mock::now + delayBeforeInput + holdDuration;
+  resetReleaseObserved = false;
+  resetRxCallsAtWait = radio.rxCalls;
+  Mock::onDelay = releaseResetAfterLongHold;
 }
 
 void finishStartupBlink() {
@@ -481,7 +506,9 @@ void testExternalResetTriggersOnceUntilReleased() {
   resetFirmware();
   MockPreferences::bytes = {1, 2, 3};
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  scheduleResetRelease(1200, 60000);
   setup();
+  assert(resetReleaseObserved);
   assert(Mock::restarts == 1);
   assert(MockPreferences::bytes.empty());
   assert(MockPreferences::removeCalls == 1);
@@ -498,7 +525,7 @@ void testExternalResetTriggersOnceUntilReleased() {
   MockPreferences::bytes = {7, 8, 9};
   for (unsigned i = 0; i < 100; ++i) loop();
   assert(MockPreferences::bytes.size() == 3);
-  assert(Mock::gpioWakeupLevel == GPIO_INTR_HIGH_LEVEL);
+  assert(Mock::gpioWakeupLevel == GPIO_INTR_LOW_LEVEL);
   loop();
   assert(Mock::restarts == 1);
 
@@ -507,7 +534,9 @@ void testExternalResetTriggersOnceUntilReleased() {
   assert(Mock::gpioWakeupLevel == GPIO_INTR_LOW_LEVEL);
   MockPreferences::bytes = {4, 5, 6};
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  scheduleResetRelease(0, 60000);
   loop();
+  assert(resetReleaseObserved);
   assert(Mock::restarts == 2);
   assert(MockPreferences::bytes.empty());
   assert(MockPreferences::removeCalls == 2);
@@ -519,8 +548,10 @@ void testExternalResetContinuesIfStationStorageCannotBeOpened() {
   MockPreferences::cadenceStorageAvailable = false;
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
 
+  scheduleResetRelease(1200, 60000);
   setup();
 
+  assert(resetReleaseObserved);
   assert(Mock::restarts == 1);
   assert(MockPreferences::bytes.size() == 3);
   assert(Mock::log.find("Stored station schedules retained") != std::string::npos);
@@ -545,7 +576,9 @@ void testExternalResetContinuesIfRemovalFails() {
   MockPreferences::bytes.assign(raw, raw + sizeof(image));
   MockPreferences::removeSucceeds = false;
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  scheduleResetRelease(1200, 60000);
   setup();
+  assert(resetReleaseObserved);
   assert(Mock::restarts == 1);
   assert(MockPreferences::removeCalls == 1);
   rebootFirmware();
@@ -576,7 +609,9 @@ void testExternalResetDoesNotRetryClearingAtBoot() {
   MockPreferences::bytes = {1, 2, 3};
   MockPreferences::removeSucceeds = false;
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  scheduleResetRelease(1200, 60000);
   setup();
+  assert(resetReleaseObserved);
   assert(Mock::restarts == 1);
   MockPreferences::removeSucceeds = true;
   rebootFirmware();
@@ -592,7 +627,9 @@ void testFailedClearingDoesNotBlinkEvenIfStorageIsEmptyAtBoot() {
   resetFirmware();
   MockPreferences::cadenceStorageAvailable = false;
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  scheduleResetRelease(1200, 60000);
   setup();
+  assert(resetReleaseObserved);
   assert(Mock::restarts == 1);
   MockPreferences::cadenceStorageAvailable = true;
   rebootFirmware();
@@ -660,49 +697,32 @@ void testExternalResetWakesFromLightSleep() {
   Mock::onSleep = nullptr;
   assert(Mock::gpioWakeupPin == PIN_EXTERNAL_RESET);
   assert(!Mock::gpioWakeupArmed);
+  scheduleResetRelease(0, 1000);
   loop();
+  assert(resetReleaseObserved);
   assert(Mock::restarts == 1);
 }
 
-void testHeldResetBlinksAndRunsWithoutRelease() {
+void testHeldResetWaitsWithWatchdogUntilReleased() {
   resetFirmware();
   MockPreferences::bytes = {1, 2, 3};
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  scheduleResetRelease(1200, 60000);
   setup();
+  assert(resetReleaseObserved);
   assert(Mock::restarts == 1);
-  rebootFirmware();
-  assert(Mock::pins[PIN_EXTERNAL_RESET] == LOW);
-  assert(Mock::activeLevelWakeupSetups == 0);
-  assert(!Mock::gpioWakeupArmed);
-  const uint32_t started = emptyStartBlinkStarted;
-  for (unsigned i = 0; i < 16; ++i) {
-    Mock::now = started + i * 250;
-    loop();
-    assert(Mock::pins[PIN_EXTERNAL_RESET] == LOW);
-    assert(Mock::pins[PIN_AWAKE_LED] == (i % 2 == 0 ? HIGH : LOW));
-    assert(Mock::pins[PIN_TX_LED] == Mock::pins[PIN_AWAKE_LED]);
-    assert(!Mock::gpioWakeupArmed);
-    assert(Mock::restarts == 1);
-  }
-  assert(radio.listening);
   assert(MockPreferences::bytes.empty());
-  finishStartupBlink();
-  assert(Mock::gpioWakeupLevel == GPIO_INTR_HIGH_LEVEL);
+  assert(MockPreferences::removeCalls == 1);
+  assert(!emptyStartBlinkActive);
+  assert(!radio.listening);
+  assert(Mock::log.find("waiting for release before restarting") != std::string::npos);
+
+  rebootFirmware();
+  assert(Mock::pins[PIN_EXTERNAL_RESET] == HIGH);
   assert(Mock::activeLevelWakeupSetups == 0);
   assert(!Mock::gpioWakeupArmed);
-  Mock::onSleep = []() {
-    assert(Mock::gpioWakeupArmed);
-    assert(Mock::gpioWakeupLevel == GPIO_INTR_HIGH_LEVEL);
-    Mock::pins[PIN_EXTERNAL_RESET] = HIGH;
-  };
-  enterLightSleep(1000);
-  Mock::onSleep = nullptr;
-  assert(!Mock::gpioWakeupArmed);
-  loop();
-  assert(externalResetLatch == 0);
-  Mock::pins[PIN_EXTERNAL_RESET] = LOW;
-  loop();
-  assert(Mock::restarts == 2);
+  assert(radio.listening);
+  assert(emptyStartBlinkActive);
 }
 
 void testTxLedTurnsOffAfterTransmitError() {
@@ -764,7 +784,7 @@ int main() {
   testStoredStartupDoesNotBlink();
   testFatalErrorRestartsWithoutWaitingForever();
   testExternalResetWakesFromLightSleep();
-  testHeldResetBlinksAndRunsWithoutRelease();
+  testHeldResetWaitsWithWatchdogUntilReleased();
   testTxLedTurnsOffAfterTransmitError();
   testSleepFailureDisablesSleep();
   std::cout << "Firmware startup, relay and sleep tests passed\n";
