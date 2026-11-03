@@ -774,6 +774,13 @@ Preferences batteryPreferences;
 bool batteryStorageReady = false;
 RTC_NOINIT_ATTR uint32_t externalResetLatch;
 constexpr uint32_t EXTERNAL_RESET_LATCH_MAGIC = 0x52535437;
+RTC_NOINIT_ATTR uint32_t externalResetStartup;
+constexpr uint32_t RESET_STARTUP_PENDING = 0x504E4437;
+constexpr uint32_t RESET_STARTUP_CLEARED = 0x434C5237;
+constexpr uint32_t EMPTY_START_BLINK_MS = 4000;
+constexpr uint32_t EMPTY_START_BLINK_INTERVAL_MS = 250;
+bool emptyStartBlinkActive = false;
+uint32_t emptyStartBlinkStarted = 0;
 
 bool clearPersistentSchedule();
 
@@ -785,8 +792,14 @@ bool checkExternalResetInput() {
   if (externalResetLatch == EXTERNAL_RESET_LATCH_MAGIC) return false;
 
   externalResetLatch = EXTERNAL_RESET_LATCH_MAGIC;
+  externalResetStartup = RESET_STARTUP_PENDING;
   Serial.println("GPIO 7 grounded; clearing stored station schedules.");
-  if (!clearPersistentSchedule()) return false;
+  if (clearPersistentSchedule()) {
+    externalResetStartup = RESET_STARTUP_CLEARED;
+  } else {
+    Serial.println("WARNING: restarting despite storage error; boot will retry "
+                   "once and ignore old station data.");
+  }
 
   Serial.println("External reset requested on GPIO 7.");
   Serial.flush();
@@ -796,6 +809,14 @@ bool checkExternalResetInput() {
 }
 
 void setExternalLed(int pin, bool on) {
+  if (emptyStartBlinkActive) {
+    const uint32_t elapsed = millis() - emptyStartBlinkStarted;
+    if (elapsed < EMPTY_START_BLINK_MS) {
+      on = (elapsed / EMPTY_START_BLINK_INTERVAL_MS) % 2 == 0;
+    } else {
+      emptyStartBlinkActive = false;
+    }
+  }
   digitalWrite(pin, on && digitalRead(PIN_LED_INHIBIT) != LOW ? HIGH : LOW);
 }
 
@@ -953,12 +974,13 @@ struct ScheduleStorageImage {
 Preferences schedulePreferences;
 bool scheduleStorageReady = false;
 
-bool loadPersistentSchedule() {
+bool loadPersistentSchedule(bool restore = true) {
   if (!schedulePreferences.begin("fanet-cadence", false)) {
     Serial.println("ERROR: could not open persistent cadence storage.");
     return false;
   }
   scheduleStorageReady = true;
+  if (!restore) return false;
   const size_t storedSize =
       schedulePreferences.getBytesLength(SCHEDULE_STORAGE_KEY);
   if (storedSize == 0) return false;
@@ -1033,7 +1055,7 @@ void persistScheduleIfNeeded() {
 bool clearPersistentSchedule() {
   Preferences resetPreferences;
   if (!resetPreferences.begin("fanet-cadence", false)) {
-    Serial.println("ERROR: could not open persistent cadence storage; reset cancelled.");
+    Serial.println("ERROR: could not open persistent cadence storage for clearing.");
     return false;
   }
 
@@ -1043,7 +1065,7 @@ bool clearPersistentSchedule() {
       (!resetPreferences.remove(SCHEDULE_STORAGE_KEY) ||
        resetPreferences.getBytesLength(SCHEDULE_STORAGE_KEY) != 0)) {
     resetPreferences.end();
-    Serial.println("ERROR: could not clear stored station schedules; reset cancelled.");
+    Serial.println("ERROR: could not clear stored station schedules.");
     return false;
   }
 
@@ -1057,14 +1079,11 @@ void ARDUINO_ISR_ATTR onPacketReceived() {
 }
 
 void fatalError(const char* operation, int16_t code) {
-  Serial.printf("FATAL: %s, RadioLib code=%d. Check board/antenna and reset.\n",
+  Serial.printf("FATAL: %s, RadioLib code=%d. Restarting; check board/antenna.\n",
                 operation, code);
-  while (true) {
-    digitalWrite(PIN_LED, HIGH);
-    delay(200);
-    digitalWrite(PIN_LED, LOW);
-    delay(800);
-  }
+  Serial.flush();
+  delay(100);
+  esp_restart();
 }
 
 void requireRadio(const char* operation, int16_t code) {
@@ -1313,6 +1332,16 @@ void initLightSleep() {
 
 void enterLightSleep(uint64_t durationUs) {
   if (!lightSleepReady) return;
+  if (emptyStartBlinkActive) return;
+  // A held reset must wake on release, not reject every sleep with LOW.
+  const esp_err_t resetPin = gpio_wakeup_enable(
+      static_cast<gpio_num_t>(PIN_EXTERNAL_RESET),
+      externalResetLatch == EXTERNAL_RESET_LATCH_MAGIC
+          ? GPIO_INTR_HIGH_LEVEL : GPIO_INTR_LOW_LEVEL);
+  if (resetPin != ESP_OK) {
+    disableLightSleep("reset GPIO wakeup setup", resetPin);
+    return;
+  }
   Serial.flush();
   const esp_err_t timer = esp_sleep_enable_timer_wakeup(durationUs);
   if (timer != ESP_OK) {
@@ -1460,12 +1489,23 @@ void setup() {
   Serial.println("External LED GPIO 4: ON = ESP32 awake, OFF = light sleep.");
   Serial.println("External TX LED GPIO 5: ON = transmitting, OFF = idle.");
   Serial.println("Ground GPIO 6 to disable both external LEDs.");
-  Serial.println("Ground GPIO 7 to reset the board once until released.");
+  Serial.println("Ground GPIO 7 to clear stations and restart once until released.");
+  initializeWatchdog();
   if (checkExternalResetInput()) return;
   if (!checkBatteryAtBoot()) return;
-  initializeWatchdog();
   SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS);
-  const bool restoredSchedule = loadPersistentSchedule();
+  const bool freshStart = externalResetStartup == RESET_STARTUP_PENDING ||
+                          externalResetStartup == RESET_STARTUP_CLEARED;
+  const bool storageCleared =
+      !freshStart || externalResetStartup == RESET_STARTUP_CLEARED ||
+      clearPersistentSchedule();
+  externalResetStartup = storageCleared ? 0 : RESET_STARTUP_PENDING;
+  const bool restoredSchedule = loadPersistentSchedule(!freshStart);
+  if (!storageCleared) {
+    scheduleStorageReady = false;
+    Serial.println("ERROR: station storage still not cleared; running with "
+                   "empty RAM schedules, persistence disabled until restart.");
+  }
   requireRadio("begin", radio.begin(FREQUENCY_MHZ, BANDWIDTH_KHZ, SPREADING_FACTOR,
                                     CODING_RATE, SYNC_WORD, TX_POWER_DBM,
                                     PREAMBLE_SYMBOLS, 1.8f));
@@ -1496,6 +1536,14 @@ void setup() {
   } else {
     beginLearning(lastLearningStart);
   }
+  if (storageCleared && scheduleStorageReady && !restoredSchedule &&
+      schedulePreferences.getBytesLength(SCHEDULE_STORAGE_KEY) == 0) {
+    emptyStartBlinkStarted = millis();
+    emptyStartBlinkActive = true;
+    Serial.println("Empty station storage: blinking both external LEDs for 4 seconds.");
+    setExternalLed(PIN_AWAKE_LED, true);
+    setExternalLed(PIN_TX_LED, false);
+  }
 }
 
 void loop() {
@@ -1505,6 +1553,7 @@ void loop() {
     return;
   }
   setExternalLed(PIN_AWAKE_LED, true);
+  setExternalLed(PIN_TX_LED, false);
   monitorBattery();
   if (batterySleepMode) return;
 #if ENABLE_LIGHT_SLEEP && ENABLE_ADAPTIVE_RX

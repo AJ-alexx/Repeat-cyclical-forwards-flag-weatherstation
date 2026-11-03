@@ -42,14 +42,16 @@ Die Firmware verwaltet 32 Zeitplanplätze, also höchstens 16 verschiedene Absen
 
 ## LEDs und Kontrolle
 
-- **GPIO 35 (`PIN_LED`):** Status-LED für das Senden weitergeleiteter Pakete; bei einem fatalen Fehler blinkt sie dauerhaft (200 ms an, 800 ms aus). Der serielle Monitor zeigt dazu `FATAL`, Vorgang und Fehlercode.
+- **GPIO 35 (`PIN_LED`):** Status-LED für das Senden weitergeleiteter Pakete. Bei einem fatalen Funkfehler zeigt der serielle Monitor `FATAL`, Vorgang und Fehlercode; die Firmware startet automatisch neu, statt dauerhaft in einer Fehlerschleife zu bleiben.
 - **GPIO 4 (`PIN_AWAKE_LED`):** externe LED leuchtet, solange der ESP32 wach ist, und ist während Light-Sleep aus. Vorwiderstand in Reihe verwenden; Schaltskizze siehe unten.
 - **GPIO 5 (`PIN_TX_LED`):** zusätzliche externe Sende-LED leuchtet während jedes Sendeversuchs und erlischt danach auch bei einem Sendefehler. Die interne LED an GPIO 35 bleibt unverändert; die externe Sende-LED zeigt keine fatalen Fehler an.
 - **GPIO 6 (`PIN_LED_INHIBIT`):** freier Eingang mit internem Pull-up. Wird GPIO 6 mit GND verbunden, bleiben beide externen LEDs aus. Die interne Status-LED an GPIO 35 bleibt davon unberührt.
-- **GPIO 7 (`PIN_EXTERNAL_RESET`):** Reset-Eingang mit internem Pull-up. Wird GPIO 7 mit GND verbunden, löscht die Firmware zuerst die gespeicherten Stations-Zeitpläne und startet das Board danach einmal neu. Bleibt GND anliegen, läuft es danach weiter; erst nach dem Trennen und erneutem Verbinden wird wieder gelöscht und neu gestartet. Kann der Stationsspeicher nicht gelöscht werden, wird der Reset abgebrochen.
+- **GPIO 7 (`PIN_EXTERNAL_RESET`):** Reset-Eingang mit internem Pull-up. Wird GPIO 7 mit GND verbunden, versucht die Firmware zuerst, die gespeicherten NAME- und Wetter-Zeitpläne zu löschen, und startet das Board danach einmal neu, auch bei einem Löschfehler. Bleibt GND anliegen, läuft es danach weiter; erst nach dem Trennen und erneutem Verbinden wird wieder gelöscht und neu gestartet. Nach einem Löschfehler wird beim Neustart genau einmal erneut versucht zu löschen. Scheitert auch das, beginnt der Empfang mit leerer Stationsliste im RAM, ohne alte Zeitpläne zu laden; dauerhaftes Speichern bleibt für diesen Lauf deaktiviert. Der Fehler wird seriell gemeldet. Auch bei weiteren Software-Neustarts werden die alten Daten bis zum erfolgreichen Löschen nicht geladen. Ein dauerhaft defekter Speicher kann dadurch nicht physisch gelöscht werden.
 - **GPIO 2 (`PIN_BATTERY_ADC`):** ADC-Eingang zur Akkuüberwachung über einen externen Spannungsteiler.
 
 Der serielle Monitor läuft mit **115200 Baud**. Im normalen Betrieb werden Statuszähler ungefähr jede Minute ausgegeben.
+
+Bei einem Start mit nachweislich leerem Stationsspeicher blinken beide externen LEDs (GPIO 4 und GPIO 5) **vier Sekunden lang gemeinsam**, jeweils 250 ms an und 250 ms aus. Empfang und Hauptschleife laufen währenddessen weiter; eine viersekündige blockierende Wartezeit gibt es nicht. Danach gelten wieder die normalen LED-Funktionen. GPIO 6 an GND unterdrückt weiterhin beide LEDs, auch diese Startanzeige. Ein nicht löschbarer Speicher wird nicht fälschlich als leer signalisiert. Der Watchdog wird bereits vor dem Löschversuch aktiviert, damit ein blockierender Ablauf einen automatischen Neustart auslöst.
 
 ### Externe Sende-LED anschließen
 
@@ -77,7 +79,7 @@ GPIO 7 ──────o/ o────── GND      Reset-Taster/Jumper
              geschlossen = einmaliger Neustart
 ```
 
-Für GPIO 6 und GPIO 7 sind keine zusätzlichen Widerstände nötig. Der Reset-Eingang weckt das Board auch aus dem Light-Sleep. GPIO 35 (interne Status-LED) wird durch den GPIO-6-Schalter nicht beeinflusst.
+Für GPIO 6 und GPIO 7 sind keine zusätzlichen Widerstände nötig. Der Reset-Eingang weckt das Board auch aus dem Light-Sleep. Bei gehaltenem GND wird stattdessen auf das Loslassen geweckt, damit der aktive LOW-Pegel nicht jeden Schlafversuch sofort unterbricht. Während der viersekündigen Startanzeige bleibt der ESP32 wach. GPIO 35 (interne Status-LED) wird durch den GPIO-6-Schalter nicht beeinflusst.
 
 ## Solar-, Akku- und 3,3-V-Versorgung
 

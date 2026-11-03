@@ -11,6 +11,7 @@ void resetFirmware() {
   Mock::radioWakeup = false;
   Mock::gpioWakeup = false;
   Mock::gpioWakeupPin = -1;
+  Mock::gpioWakeupLevel = -1;
   Mock::sleepDurationUs = 0;
   Mock::batteryAdcMillivolts = 684;
   Mock::sleepCalls = 0;
@@ -23,6 +24,7 @@ void resetFirmware() {
   MockPreferences::batteryStorageAvailable = true;
   MockPreferences::cadenceStorageAvailable = true;
   MockPreferences::removeCalls = 0;
+  MockPreferences::removeSucceeds = true;
   radio.rxCalls = radio.txCalls = radio.readCalls = 0;
   radio.asleep = radio.listening = false;
   radio.callback = nullptr;
@@ -37,12 +39,42 @@ void resetFirmware() {
   lightSleepReady = false;
   batterySleepMode = radioInitialized = batteryRecovered = false;
   batteryStorageReady = false;
+  scheduleStorageReady = false;
   lastBatteryCheck = 0;
   for (PendingPacket& packet : pending) packet = PendingPacket{};
   receivedCount = forwardedCount = filteredCount = duplicateCount = droppedCount = 0;
   lastTxFinished = txOffTimeMs = lastStatus = 0;
   lastRadioActivity = lastLearningStart = 0;
   externalResetLatch = 0;
+  externalResetStartup = 0;
+  emptyStartBlinkActive = false;
+  emptyStartBlinkStarted = 0;
+}
+
+void rebootFirmware() {
+  const uint32_t latch = externalResetLatch;
+  const uint32_t startup = externalResetStartup;
+  const int resetPin = Mock::pins[PIN_EXTERNAL_RESET];
+  const auto bytes = MockPreferences::bytes;
+  const bool storageAvailable = MockPreferences::cadenceStorageAvailable;
+  const bool removeSucceeds = MockPreferences::removeSucceeds;
+  const unsigned removes = MockPreferences::removeCalls;
+  const unsigned restarts = Mock::restarts;
+  resetFirmware();
+  externalResetLatch = latch;
+  externalResetStartup = startup;
+  Mock::pins[PIN_EXTERNAL_RESET] = resetPin;
+  MockPreferences::bytes = bytes;
+  MockPreferences::cadenceStorageAvailable = storageAvailable;
+  MockPreferences::removeSucceeds = removeSucceeds;
+  MockPreferences::removeCalls = removes;
+  Mock::restarts = restarts;
+  setup();
+}
+
+void finishStartupBlink() {
+  Mock::now = emptyStartBlinkStarted + EMPTY_START_BLINK_MS;
+  loop();
 }
 
 void testStoredScheduleVerification() {
@@ -275,6 +307,7 @@ void testTenMissedWeatherWindowsDisableAndCanBeRelearned() {
 
 void testNameSchedulePersistsWithoutWeatherSchedule() {
   resetFirmware();
+  assert(!loadPersistentSchedule());
   uint8_t name[] = {static_cast<uint8_t>(Fanet::NAME | Fanet::FORWARD_FLAG),
                     12, 12, 12, 0x01};
   receiveSchedule.observe(name, sizeof(name), 1000);
@@ -385,6 +418,7 @@ void testStartupAndRelay() {
   assert(Mock::log.find("RX ready") != std::string::npos);
   assert(Mock::log.find("Battery:") != std::string::npos);
   assert(lightSleepReady && Mock::radioWakeup);
+  finishStartupBlink();
   assert(Mock::pins[PIN_TX_LED] == LOW);
   assert(Mock::pins[PIN_AWAKE_LED] == HIGH);
   radio.onTransmit = []() {
@@ -406,8 +440,9 @@ void testStartupAndRelay() {
   assert(forwardedCount == 1);
   assert(Mock::pins[PIN_TX_LED] == LOW);
 
+  const unsigned sleepCalls = Mock::sleepCalls;
   enterLightSleep(1000);
-  assert(Mock::sleepCalls == 1 && Mock::radioWakeup);
+  assert(Mock::sleepCalls == sleepCalls + 1 && Mock::radioWakeup);
   assert(Mock::pins[PIN_TX_LED] == LOW);
 }
 
@@ -416,6 +451,7 @@ void testGroundedInputDisablesBothExternalLeds() {
   Mock::pins[PIN_LED_INHIBIT] = LOW;
   setup();
   assert(Mock::pins[PIN_AWAKE_LED] == LOW);
+  assert(Mock::pins[PIN_TX_LED] == LOW);
 
   Mock::pins[PIN_LED_INHIBIT] = HIGH;
   loop();
@@ -448,15 +484,24 @@ void testExternalResetTriggersOnceUntilReleased() {
   assert(MockPreferences::removeCalls == 1);
   assert(radio.rxCalls == 0);
 
-  setup();
+  rebootFirmware();
   assert(Mock::restarts == 1);
   assert(MockPreferences::removeCalls == 1);
   assert(radio.listening);
+  assert(receiveSchedule.trackedCount() == 0);
+  assert(!controlActive || stationDiscovery.active(millis(), false));
+  assert(emptyStartBlinkActive);
+  finishStartupBlink();
+  MockPreferences::bytes = {7, 8, 9};
+  for (unsigned i = 0; i < 100; ++i) loop();
+  assert(MockPreferences::bytes.size() == 3);
+  assert(Mock::gpioWakeupLevel == GPIO_INTR_HIGH_LEVEL);
   loop();
   assert(Mock::restarts == 1);
 
   Mock::pins[PIN_EXTERNAL_RESET] = HIGH;
   loop();
+  assert(Mock::gpioWakeupLevel == GPIO_INTR_LOW_LEVEL);
   MockPreferences::bytes = {4, 5, 6};
   Mock::pins[PIN_EXTERNAL_RESET] = LOW;
   loop();
@@ -465,7 +510,7 @@ void testExternalResetTriggersOnceUntilReleased() {
   assert(MockPreferences::removeCalls == 2);
 }
 
-void testExternalResetIsCancelledIfStationStorageCannotBeCleared() {
+void testExternalResetContinuesIfStationStorageCannotBeOpened() {
   resetFirmware();
   MockPreferences::bytes = {1, 2, 3};
   MockPreferences::cadenceStorageAvailable = false;
@@ -473,9 +518,107 @@ void testExternalResetIsCancelledIfStationStorageCannotBeCleared() {
 
   setup();
 
-  assert(Mock::restarts == 0);
+  assert(Mock::restarts == 1);
   assert(MockPreferences::bytes.size() == 3);
-  assert(Mock::log.find("reset cancelled") != std::string::npos);
+  assert(Mock::log.find("restarting despite storage error") != std::string::npos);
+  rebootFirmware();
+  assert(Mock::restarts == 1);
+  assert(radio.listening);
+  assert(receiveSchedule.trackedCount() == 0);
+  assert(!scheduleStorageReady);
+  assert(!emptyStartBlinkActive);
+  for (unsigned i = 0; i < 100; ++i) loop();
+  assert(Mock::restarts == 1);
+}
+
+void testExternalResetContinuesIfRemovalFails() {
+  resetFirmware();
+  ScheduleStorageImage image;
+  image.count = 2;
+  image.schedules[0] = storedSchedule(1, Fanet::NAME, 10000);
+  image.schedules[1] = storedSchedule(1, Fanet::WEATHER, 60000);
+  const uint8_t* raw = reinterpret_cast<const uint8_t*>(&image);
+  MockPreferences::bytes.assign(raw, raw + sizeof(image));
+  MockPreferences::removeSucceeds = false;
+  Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  setup();
+  assert(Mock::restarts == 1);
+  assert(MockPreferences::removeCalls == 1);
+  rebootFirmware();
+  assert(Mock::restarts == 1);
+  assert(MockPreferences::removeCalls == 2);
+  assert(MockPreferences::bytes.size() == sizeof(image));
+  assert(radio.listening);
+  assert(receiveSchedule.trackedCount() == 0);
+  assert(!scheduleStorageReady);
+  assert(!emptyStartBlinkActive);
+  for (unsigned i = 0; i < 100; ++i) loop();
+  assert(MockPreferences::removeCalls == 2);
+  assert(Mock::restarts == 1);
+  rebootFirmware();
+  assert(Mock::restarts == 1);
+  assert(receiveSchedule.trackedCount() == 0);
+  assert(!scheduleStorageReady);
+  assert(!emptyStartBlinkActive);
+}
+
+void testExternalResetRetriesClearingAtBoot() {
+  resetFirmware();
+  MockPreferences::bytes = {1, 2, 3};
+  MockPreferences::removeSucceeds = false;
+  Mock::pins[PIN_EXTERNAL_RESET] = LOW;
+  setup();
+  assert(Mock::restarts == 1);
+  MockPreferences::removeSucceeds = true;
+  rebootFirmware();
+  assert(Mock::restarts == 1);
+  assert(MockPreferences::removeCalls == 2);
+  assert(MockPreferences::bytes.empty());
+  assert(scheduleStorageReady);
+  assert(emptyStartBlinkActive);
+  assert(radio.listening);
+}
+
+void testEmptyStartupBlinksWithoutBlocking() {
+  resetFirmware();
+  setup();
+  assert(emptyStartBlinkActive);
+  const uint32_t started = emptyStartBlinkStarted;
+  const unsigned watchdogCalls = Mock::watchdogCalls;
+  for (unsigned i = 0; i < 16; ++i) {
+    Mock::now = started + i * 250;
+    loop();
+    assert(Mock::pins[PIN_AWAKE_LED] == (i % 2 == 0 ? HIGH : LOW));
+    assert(Mock::pins[PIN_TX_LED] == Mock::pins[PIN_AWAKE_LED]);
+    assert(Mock::now == started + i * 250 + 2);
+    assert(Mock::sleepCalls == 0);
+  }
+  assert(Mock::watchdogCalls == watchdogCalls + 16);
+  finishStartupBlink();
+  assert(!emptyStartBlinkActive);
+  assert(Mock::pins[PIN_AWAKE_LED] == HIGH);
+  assert(Mock::pins[PIN_TX_LED] == LOW);
+  assert(Mock::sleepCalls > 0);
+}
+
+void testStoredStartupDoesNotBlink() {
+  resetFirmware();
+  ScheduleStorageImage image;
+  image.count = 1;
+  image.schedules[0] = storedSchedule(1, Fanet::NAME, 10000);
+  const uint8_t* raw = reinterpret_cast<const uint8_t*>(&image);
+  MockPreferences::bytes.assign(raw, raw + sizeof(image));
+  setup();
+  assert(!emptyStartBlinkActive);
+  assert(controlActive);
+  assert(receiveSchedule.trackedCount() == 1);
+}
+
+void testFatalErrorRestartsWithoutWaitingForever() {
+  resetFirmware();
+  fatalError("test", -1);
+  assert(Mock::restarts == 1);
+  assert(Mock::now == 100);
 }
 
 void testExternalResetWakesFromLightSleep() {
@@ -489,6 +632,7 @@ void testExternalResetWakesFromLightSleep() {
 void testTxLedTurnsOffAfterTransmitError() {
   resetFirmware();
   setup();
+  finishStartupBlink();
   radio.transmitResult = -1;
   radio.onTransmit = []() {
     assert(Mock::pins[PIN_TX_LED] == HIGH);
@@ -510,6 +654,7 @@ void testTxLedTurnsOffAfterTransmitError() {
 void testSleepFailureDisablesSleep() {
   resetFirmware();
   setup();
+  finishStartupBlink();
   Mock::sleepResult = ESP_ERR_INVALID_STATE;
   enterLightSleep(1000);
   assert(!lightSleepReady);
@@ -535,7 +680,12 @@ int main() {
   testStartupAndRelay();
   testGroundedInputDisablesBothExternalLeds();
   testExternalResetTriggersOnceUntilReleased();
-  testExternalResetIsCancelledIfStationStorageCannotBeCleared();
+  testExternalResetContinuesIfStationStorageCannotBeOpened();
+  testExternalResetContinuesIfRemovalFails();
+  testExternalResetRetriesClearingAtBoot();
+  testEmptyStartupBlinksWithoutBlocking();
+  testStoredStartupDoesNotBlink();
+  testFatalErrorRestartsWithoutWaitingForever();
   testExternalResetWakesFromLightSleep();
   testTxLedTurnsOffAfterTransmitError();
   testSleepFailureDisablesSleep();
